@@ -14,13 +14,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.domain import Exercise
 from app.core.runner._harness import run_student_in_sandbox
 
 
 def grade_student_code(
     source: str,
-    spec: dict,
-    exercise: dict,
+    spec: dict[str, Any],
+    exercise: Exercise | dict[str, Any],
     data_files: dict[str, str | bytes] | None = None,
     cpu_seconds: int = 10,
     memory_mb: int = 256,
@@ -28,18 +29,6 @@ def grade_student_code(
 ) -> dict[str, Any]:
     """
     Grade student code by running it in the sandbox and evaluating on the host.
-
-    Args:
-        source: Student's Python source code
-        spec: Grading spec dict
-        exercise: Exercise dict
-        data_files: Additional data files to mount in container
-        cpu_seconds: CPU time limit
-        memory_mb: Memory limit
-        wall_seconds: Wall clock timeout
-
-    Returns:
-        Grading result dict with keys: ok, goalMet, metric, error, checks, stdout
     """
     # 1. Prepare files for the container
     files: dict[str, str | bytes] = {}
@@ -102,10 +91,8 @@ def grade_student_code(
     }
 
 
-def _run_check(check: dict, student_output: dict) -> dict:
-    """
-    Execute a single grading check against student output on the host.
-    """
+def _run_check(check: dict[str, Any], student_output: dict[str, Any]) -> dict[str, Any]:
+    """Execute a single grading check against student output on the host."""
     check_type = check.get("type")
 
     if check_type == "var_numeric":
@@ -114,7 +101,6 @@ def _run_check(check: dict, student_output: dict) -> dict:
         return _check_stdout_contains(check, student_output)
     elif check_type == "stdout_equals":
         return _check_stdout_equals(check, student_output)
-    # Add more check types as needed...
     else:
         return {
             "ok": False,
@@ -123,11 +109,18 @@ def _run_check(check: dict, student_output: dict) -> dict:
         }
 
 
-def _check_var_numeric(check: dict, student_output: dict) -> dict:
+def _check_var_numeric(check: dict[str, Any], student_output: dict[str, Any]) -> dict[str, Any]:
     """Check numeric variable against expected value."""
     var = check.get("var")
     expected = check.get("expected")
     tol = check.get("tol", 1e-6)
+
+    if not isinstance(var, str):
+        return {
+            "ok": False,
+            "type": "var_numeric",
+            "detail": "Variable name missing or invalid in check spec",
+        }
 
     actual = student_output.get(var)
     if actual is None:
@@ -137,7 +130,7 @@ def _check_var_numeric(check: dict, student_output: dict) -> dict:
             "detail": f"Variable '{var}' not found",
         }
 
-    if abs(actual - expected) > tol:
+    if expected is None or abs(actual - expected) > tol:
         return {
             "ok": False,
             "type": "var_numeric",
@@ -151,7 +144,7 @@ def _check_var_numeric(check: dict, student_output: dict) -> dict:
     }
 
 
-def _check_stdout_contains(check: dict, student_output: dict) -> dict:
+def _check_stdout_contains(check: dict[str, Any], student_output: dict[str, Any]) -> dict[str, Any]:
     """Check if stdout contains expected text."""
     expected = check.get("text", "")
     stdout = student_output.get("stdout", "")
@@ -170,7 +163,7 @@ def _check_stdout_contains(check: dict, student_output: dict) -> dict:
     }
 
 
-def _check_stdout_equals(check: dict, student_output: dict) -> dict:
+def _check_stdout_equals(check: dict[str, Any], student_output: dict[str, Any]) -> dict[str, Any]:
     """Check if stdout equals expected text."""
     expected = check.get("text", "")
     stdout = student_output.get("stdout", "")
