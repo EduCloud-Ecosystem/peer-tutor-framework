@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from . import run_python
+from app.core import runner
 
 # Lightweight execution wrapper injected into the container to safely stringify student output.
 _CONTAINER_EXECUTOR_STUB = """
@@ -79,9 +79,9 @@ def run_student_in_sandbox(
     staged_files = dict(files or {})
     staged_files["student.py"] = source
 
-    runner_res = run_python(
-        _CONTAINER_EXECUTOR_STUB,
-        files=staged_files,
+    runner_res = runner.run_python(
+        source,
+        files=files or {},
         artifacts=artifacts or ["result.json"],
         cpu_seconds=cpu_seconds,
         memory_mb=memory_mb,
