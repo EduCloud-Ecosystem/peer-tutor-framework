@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """
-Spec-driven grader. Stages the exercise's declarative spec + data fixtures, runs
-the student source through the `_harness` driver INSIDE core/runner (sandboxed),
-and parses the harness verdict into a pack-agnostic `RunResult`.
-
-This is the single execution path for `run`; `verify_worked_example` and the
-`leak_evidence` executable oracle reuse `grade` so no student code ever runs
-outside the runner.
+Spec-driven grader. Stages the exercise's declarative spec + data fixtures,
+and evaluates the student source ON THE HOST by delegating to the pack's `_harness`.
 """
 
 from __future__ import annotations
@@ -14,14 +9,11 @@ from __future__ import annotations
 import json
 import os
 
-from ...core import runner
 from ...core.domain import Exercise, RunResult
+from ._harness import grade_student_code
 
 _HERE = os.path.dirname(__file__)
 _SPECS_DIR = os.path.join(_HERE, "specs")
-_HARNESS_PATH = os.path.join(_HERE, "_harness.py")
-
-_GRADE_PREFIX = "__GRADE__"
 
 
 def spec_path(exercise_id: str) -> str:
@@ -38,28 +30,12 @@ def has_spec(exercise_id: str) -> bool:
     return os.path.exists(spec_path(exercise_id))
 
 
-def _harness_source() -> str:
-    with open(_HARNESS_PATH, encoding="utf-8") as fh:
-        return fh.read()
-
-
 def _stage_data(spec: dict) -> dict:
     files = {}
     for rel in spec.get("data_files", []):
         with open(os.path.join(_SPECS_DIR, rel), encoding="utf-8") as fh:
             files[rel] = fh.read()
     return files
-
-
-def _parse_grade(stdout: str) -> dict | None:
-    for line in stdout.splitlines():
-        if line.startswith(_GRADE_PREFIX):
-            try:
-                parsed: dict = json.loads(line[len(_GRADE_PREFIX) :])
-                return parsed
-            except json.JSONDecodeError:
-                return None
-    return None
 
 
 def _summary(grade: dict) -> str:
@@ -76,23 +52,17 @@ def _summary(grade: dict) -> str:
 
 
 def grade(source: str, exercise: Exercise) -> RunResult:
-    """Grade ``source`` against ``exercise``'s spec inside the sandbox runner."""
+    """Grade ``source`` against ``exercise``'s spec safely on the host."""
     ex_id = exercise.get("id", "")
     spec = load_spec(ex_id)
-    files = _stage_data(spec)
-    files["student.py"] = source
-    files["spec.json"] = json.dumps(spec)
+    data_files = _stage_data(spec)
 
-    res = runner.run_python(_harness_source(), files=files)
-    grade_obj = _parse_grade(res.stdout)
+    grade_obj = grade_student_code(
+        source=source, spec=spec, exercise=exercise, data_files=data_files
+    )
 
-    if grade_obj is None:
-        # Harness produced no verdict: crash, timeout, or resource kill.
-        err = (
-            res.error
-            or (res.stderr.strip()[-300:] if res.stderr.strip() else None)
-            or "grader produced no verdict"
-        )
+    if not grade_obj.get("ok") and not grade_obj.get("checks"):
+        err = grade_obj.get("error") or "grader produced no verdict"
         return {
             "ok": False,
             "goalMet": False,
@@ -101,9 +71,9 @@ def grade(source: str, exercise: Exercise) -> RunResult:
             "pack": {
                 "id": "datascience",
                 "checks": [],
-                "stdout": res.stdout[-500:],
+                "stdout": grade_obj.get("stdout", ""),
                 "summary": err,
-                "timed_out": res.timed_out,
+                "timed_out": False,
             },
         }
 

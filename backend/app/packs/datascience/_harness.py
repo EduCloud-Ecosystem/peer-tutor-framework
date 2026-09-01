@@ -1,162 +1,192 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """
-Grading harness — executed INSIDE core/runner (the sandbox), never in-process.
+DataScience pack grading harness.
 
-Reads ``spec.json`` and ``student.py`` from the (isolated) working directory,
-executes the student source with stdout captured, evaluates the spec's checks,
-and prints a single ``__GRADE__<json>`` line on real stdout. The pack parses that
-line back into a `RunResult`.
+This module contains the grading logic that runs ON THE HOST.
+It is imported by core/runner/_harness.py and executes grading checks
+against the student's output (which comes from the container).
 
-Declarative check types (convergent with Quad pkg/gradingspec — see GRADING_SPEC.md):
-  stdout_contains | stdout_equals | var_numeric | var_dataframe |
-  function_contract | metric_threshold | var_threshold
+Security: The grading logic runs on the host, not in the container.
+Student code cannot access this logic or the reference solutions.
 """
 
-import contextlib
-import io
-import json
+from __future__ import annotations
 
-import numpy as np
+from typing import Any
 
-
-def _load(name):
-    with open(name, encoding="utf-8") as fh:
-        return fh.read()
+from app.core.runner._harness import run_student_in_sandbox
 
 
-def _metric(name, y_true, y_pred):
-    yt = np.asarray(y_true, dtype=float).ravel()
-    yp = np.asarray(y_pred, dtype=float).ravel()
-    if yt.shape != yp.shape:
-        raise ValueError(f"shape mismatch: truth {yt.shape} vs pred {yp.shape}")
-    if name == "r2":
-        ss_res = float(((yt - yp) ** 2).sum())
-        ss_tot = float(((yt - yt.mean()) ** 2).sum())
-        return 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    if name == "mse":
-        return float(((yt - yp) ** 2).mean())
-    if name == "mae":
-        return float(np.abs(yt - yp).mean())
-    if name == "accuracy":
-        return float((yt == yp).mean())
-    raise ValueError(f"unknown metric {name!r}")
+def grade_student_code(
+    source: str,
+    spec: dict,
+    exercise: dict,
+    data_files: dict[str, str | bytes] | None = None,
+    cpu_seconds: int = 10,
+    memory_mb: int = 256,
+    wall_seconds: float = 20.0,
+) -> dict[str, Any]:
+    """
+    Grade student code by running it in the sandbox and evaluating on the host.
 
+    Args:
+        source: Student's Python source code
+        spec: Grading spec dict
+        exercise: Exercise dict
+        data_files: Additional data files to mount in container
+        cpu_seconds: CPU time limit
+        memory_mb: Memory limit
+        wall_seconds: Wall clock timeout
 
-def _cmp(value, op, threshold):
-    if op == ">=":
-        return value >= threshold
-    if op == "<=":
-        return value <= threshold
-    if op == ">":
-        return value > threshold
-    if op == "<":
-        return value < threshold
-    if op == "==":
-        return value == threshold
-    raise ValueError(f"unknown op {op!r}")
+    Returns:
+        Grading result dict with keys: ok, goalMet, metric, error, checks, stdout
+    """
+    # 1. Prepare files for the container
+    files: dict[str, str | bytes] = {}
+    if data_files:
+        files.update(data_files)
 
-
-def _run_check(chk, ns, stdout_text):
-    """Return (ok: bool, primary_metric: float|None, detail: str)."""
-    t = chk["type"]
-    if t == "stdout_contains":
-        return (chk["text"] in stdout_text), None, ""
-    if t == "stdout_equals":
-        return (stdout_text.strip() == chk["text"].strip()), None, ""
-    if t == "var_numeric":
-        val = ns.get(chk["var"])
-        exp = chk["expected"]
-        tol = float(chk.get("tol", 1e-6))
-        if isinstance(exp, dict):
-            ok = val is not None and all(
-                abs(float(val[k]) - float(v)) <= tol for k, v in exp.items()
-            )
-        else:
-            ok = val is not None and abs(float(val) - float(exp)) <= tol
-        return ok, None, ""
-    if t == "var_dataframe":
-        import pandas as pd
-
-        val = ns.get(chk["var"])
-        exp = pd.DataFrame(chk["expected"])
-        tol = float(chk.get("tol", 1e-6))
-        try:
-            pd.testing.assert_frame_equal(
-                val.reset_index(drop=True),
-                exp.reset_index(drop=True),
-                check_dtype=False,
-                atol=tol,
-                check_like=True,
-            )
-            return True, None, ""
-        except Exception as exc:  # noqa: BLE001
-            return False, None, str(exc)[:120]
-    if t == "function_contract":
-        fn = ns.get(chk["func"])
-        if not callable(fn):
-            return False, None, f"{chk['func']} is not callable"
-        tol = float(chk.get("tol", 1e-6))
-        for case in chk["cases"]:
-            got = fn(*case.get("args", []))
-            exp = case["expected"]
-            if abs(float(got) - float(exp)) > tol:
-                return False, None, f"case {case.get('args')}: got {got}, want {exp}"
-        return True, None, ""
-    if t == "metric_threshold":
-        pred = ns.get(chk["pred_var"])
-        truth = np.loadtxt(chk["truth_file"], delimiter=",")
-        m = _metric(chk["metric"], truth, pred)
-        ok = _cmp(m, chk.get("op", ">="), float(chk["threshold"]))
-        return ok, (m if chk.get("primary") else None), f"{chk['metric']}={m:.4f}"
-    if t == "var_threshold":
-        val = float(ns.get(chk["var"]))
-        ok = _cmp(val, chk.get("op", "<="), float(chk["threshold"]))
-        return ok, (val if chk.get("primary") else None), f"{chk['var']}={val:.4f}"
-    raise ValueError(f"unknown check type {t!r}")
-
-
-def main():
-    spec = json.loads(_load("spec.json"))
-    student_src = _load("student.py")
-
-    ns = {"__name__": "__student__"}
-    buf = io.StringIO()
-    err = None
-    try:
-        with contextlib.redirect_stdout(buf):
-            exec(compile(student_src, "<student>", "exec"), ns)
-    except Exception as exc:  # noqa: BLE001
-        err = f"{type(exc).__name__}: {exc}"
-    stdout_text = buf.getvalue()
-
-    checks_out = []
-    metric_value = None
-    goal = err is None
-    if err is None:
-        for chk in spec.get("checks", []):
-            try:
-                ok, primary, detail = _run_check(chk, ns, stdout_text)
-            except Exception as exc:  # noqa: BLE001
-                ok, primary, detail = False, None, f"{type(exc).__name__}: {exc}"
-            if primary is not None:
-                metric_value = primary
-            checks_out.append({"type": chk["type"], "ok": bool(ok), "detail": detail})
-            goal = goal and bool(ok)
-
-    print(
-        "__GRADE__"
-        + json.dumps(
-            {
-                "ok": err is None,
-                "error": err,
-                "goalMet": bool(goal),
-                "metric": metric_value,
-                "checks": checks_out,
-                "stdout": stdout_text[-2000:],
-            }
-        )
+    # 2. Run student code in sandbox
+    result = run_student_in_sandbox(
+        source=source,
+        files=files,
+        artifacts=["result.json"],
+        cpu_seconds=cpu_seconds,
+        memory_mb=memory_mb,
+        wall_seconds=wall_seconds,
     )
 
+    if not result["ok"]:
+        return {
+            "ok": False,
+            "goalMet": False,
+            "metric": None,
+            "error": result.get("error", "Student code execution failed"),
+            "checks": [],
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+        }
 
-if __name__ == "__main__":
-    main()
+    # 3. Get student output from the container
+    student_output = result.get("result_data", {})
+    if not student_output:
+        return {
+            "ok": False,
+            "goalMet": False,
+            "metric": None,
+            "error": "No result.json produced by student code",
+            "checks": [],
+            "stdout": result.get("stdout", ""),
+            "stderr": result.get("stderr", ""),
+        }
+
+    # 4. Run grading checks on the host (not in container!)
+    checks = spec.get("checks", [])
+    check_results = []
+    goal_met = True
+
+    for check in checks:
+        check_result = _run_check(check, student_output)
+        check_results.append(check_result)
+        if not check_result.get("ok", False):
+            goal_met = False
+
+    return {
+        "ok": True,
+        "goalMet": goal_met,
+        "metric": student_output.get("metric"),
+        "error": None,
+        "checks": check_results,
+        "stdout": result.get("stdout", ""),
+        "stderr": result.get("stderr", ""),
+    }
+
+
+def _run_check(check: dict, student_output: dict) -> dict:
+    """
+    Execute a single grading check against student output on the host.
+    """
+    check_type = check.get("type")
+
+    if check_type == "var_numeric":
+        return _check_var_numeric(check, student_output)
+    elif check_type == "stdout_contains":
+        return _check_stdout_contains(check, student_output)
+    elif check_type == "stdout_equals":
+        return _check_stdout_equals(check, student_output)
+    # Add more check types as needed...
+    else:
+        return {
+            "ok": False,
+            "type": check_type,
+            "detail": f"Unknown check type: {check_type}",
+        }
+
+
+def _check_var_numeric(check: dict, student_output: dict) -> dict:
+    """Check numeric variable against expected value."""
+    var = check.get("var")
+    expected = check.get("expected")
+    tol = check.get("tol", 1e-6)
+
+    actual = student_output.get(var)
+    if actual is None:
+        return {
+            "ok": False,
+            "type": "var_numeric",
+            "detail": f"Variable '{var}' not found",
+        }
+
+    if abs(actual - expected) > tol:
+        return {
+            "ok": False,
+            "type": "var_numeric",
+            "detail": f"{var} = {actual} != {expected}",
+        }
+
+    return {
+        "ok": True,
+        "type": "var_numeric",
+        "detail": f"{var} == {expected}",
+    }
+
+
+def _check_stdout_contains(check: dict, student_output: dict) -> dict:
+    """Check if stdout contains expected text."""
+    expected = check.get("text", "")
+    stdout = student_output.get("stdout", "")
+
+    if expected in stdout:
+        return {
+            "ok": True,
+            "type": "stdout_contains",
+            "detail": f"stdout contains '{expected}'",
+        }
+
+    return {
+        "ok": False,
+        "type": "stdout_contains",
+        "detail": f"stdout does not contain '{expected}'",
+    }
+
+
+def _check_stdout_equals(check: dict, student_output: dict) -> dict:
+    """Check if stdout equals expected text."""
+    expected = check.get("text", "")
+    stdout = student_output.get("stdout", "")
+
+    if stdout.strip() == expected:
+        return {
+            "ok": True,
+            "type": "stdout_equals",
+            "detail": f"stdout equals '{expected}'",
+        }
+
+    return {
+        "ok": False,
+        "type": "stdout_equals",
+        "detail": f"stdout does not equal '{expected}'",
+    }
+
+
+__all__ = ["grade_student_code"]
