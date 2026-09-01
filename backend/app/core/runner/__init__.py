@@ -181,18 +181,26 @@ def run_python(
 
     Primary execution path:
     - If SANDBOX_RUNNER_ENABLED=True (default): use container (Docker)
-    - If SANDBOX_ALLOW_INSECURE=True: fall back to subprocess
+    - If SANDBOX_ALLOW_INSECURE=True: fall back to subprocess (insecure, local dev only)
+
+    Security: If SANDBOX_RUNNER_ENABLED=True and SANDBOX_ALLOW_INSECURE=False,
+    Docker must be available. Otherwise, fail closed with a clear error.
 
     All student code MUST come through here.
     """
-    # Check if we should use the container sandbox
     use_container = settings.sandbox_runner_enabled
+    allow_insecure = settings.sandbox_allow_insecure
 
-    # Allow explicit override for local dev
-    if settings.sandbox_allow_insecure:
-        use_container = False
-
-    if use_container and _docker_available():
+    if use_container and not allow_insecure:
+        if not _docker_available():
+            raise RuntimeError(
+                "Docker is not available but SANDBOX_RUNNER_ENABLED=true and "
+                "SANDBOX_ALLOW_INSECURE=false. "
+                "Please either:\n"
+                "  1. Start Docker Desktop\n"
+                "  2. Set SANDBOX_ALLOW_INSECURE=true (insecure, local dev only)\n"
+                "  3. Set SANDBOX_RUNNER_ENABLED=false (use legacy subprocess runner)"
+            )
         return _run_container(
             program,
             files=files,
@@ -202,7 +210,16 @@ def run_python(
             wall_seconds=wall_seconds,
         )
 
-    # Fallback to subprocess (insecure, local dev only)
+    if allow_insecure:
+        return _run_subprocess(
+            program,
+            files=files,
+            artifacts=artifacts,
+            cpu_seconds=cpu_seconds,
+            memory_mb=memory_mb,
+            wall_seconds=wall_seconds,
+        )
+
     return _run_subprocess(
         program,
         files=files,
