@@ -153,8 +153,6 @@ class ContainerSandbox:
             "none",
             "--tmpfs",
             "/tmp:rw,size=64m",
-            "--tmpfs",
-            f"{output_dir}:rw,size=64m",
             "--user",
             f"{uid}:{gid}",
             "--name",
