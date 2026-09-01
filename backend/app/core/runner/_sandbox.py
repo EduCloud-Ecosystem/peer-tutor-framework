@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import time
+import uuid
 
 from . import RunnerResult
 from ._utils import cleanup_workdir, collect_artifacts, prepare_workdir, safe_decode
+
+MAX_RESULT_BYTES = 1 * 1024 * 1024
 
 
 class ContainerSandbox:
@@ -32,12 +36,25 @@ class ContainerSandbox:
     def run(
         self, program: str, files: dict[str, str | bytes], artifacts: list[str]
     ) -> RunnerResult:
-        """Execute the program in a container and return RunnerResult."""
+        """
+        Execute the program in a container and return RunnerResult.
 
-        workdir, _prog_path = prepare_workdir(program, files, prefix="ptf_container_")
+        Security properties:
+        - Read-only root filesystem (--read-only)
+        - CPU time limit via --ulimit cpu
+        - Wall clock timeout via subprocess timeout
+        - Process limit via --pids-limit
+        - Memory limit via --memory
+        - No network via --network none
+        - Unique container name for reliable cleanup
+        """
+        workdir = prepare_workdir(program, files, prefix="ptf_container_")
+        output_dir = tempfile.mkdtemp(prefix="ptf_output_")
+
+        container_name = f"ptf-sandbox-{uuid.uuid4().hex[:8]}"
 
         try:
-            cmd = self._build_docker_command(workdir)
+            cmd = self._build_docker_command(workdir, output_dir, container_name)
 
             t0 = time.perf_counter()
             timed_out = False
@@ -62,10 +79,16 @@ class ContainerSandbox:
                 stdout = safe_decode(exc.stdout)
                 stderr = safe_decode(exc.stderr)
                 error = f"container timeout after {self.wall_seconds}s"
-                subprocess.run(["docker", "rm", "-f", "ptf-sandbox"], capture_output=True)
+                subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+
             wall_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-            collected = collect_artifacts(workdir, artifacts)
+            collected = collect_artifacts(output_dir, artifacts)
+
+            if len(stdout) > MAX_RESULT_BYTES:
+                stdout = stdout[:MAX_RESULT_BYTES] + "\n... (output truncated)"
+            if len(stderr) > MAX_RESULT_BYTES:
+                stderr = stderr[:MAX_RESULT_BYTES] + "\n... (output truncated)"
 
             ok = (not timed_out) and exit_code == 0
 
@@ -81,10 +104,27 @@ class ContainerSandbox:
             )
 
         finally:
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
             cleanup_workdir(workdir)
+            cleanup_workdir(output_dir)
 
-    def _build_docker_command(self, workdir: str) -> list[str]:
-        """Build the Docker run command with sandbox flags."""
+    def _build_docker_command(
+        self, workdir: str, output_dir: str, container_name: str
+    ) -> list[str]:
+        """
+        Build the Docker run command with sandbox flags.
+
+        Security flags:
+        - --read-only: root filesystem is read-only
+        - --cap-drop ALL: drop all Linux capabilities
+        - --security-opt no-new-privileges: prevent privilege escalation
+        - --pids-limit 64: limit number of processes (fork bomb protection)
+        - --memory + --memory-swap: memory limit with swap disabled
+        - --ulimit cpu: CPU time limit (real CPU time, not just share)
+        - --network none: empty network namespace (not just socket patch)
+        - --tmpfs: writable temp space with size cap
+        - --user: run as non-root user with host UID/GID mapping
+        """
         image = "belay-sandbox:0.1.0"
 
         uid = os.getuid() if hasattr(os, "getuid") else 1000
@@ -94,6 +134,7 @@ class ContainerSandbox:
             "docker",
             "run",
             "--rm",
+            "--read-only",
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -106,14 +147,22 @@ class ContainerSandbox:
             f"{self.memory_mb}m",
             "--cpus",
             "1.0",
+            "--ulimit",
+            f"cpu={self.cpu_seconds}:{self.cpu_seconds + 1}",
             "--network",
             "none",
             "--tmpfs",
             "/tmp:rw,size=64m",
+            "--tmpfs",
+            f"{output_dir}:rw,size=64m",
             "--user",
             f"{uid}:{gid}",
+            "--name",
+            container_name,
             "-v",
-            f"{workdir}:/workspace:rw",
+            f"{workdir}:/workspace:ro",
+            "-v",
+            f"{output_dir}:/output:rw",
             "-w",
             "/workspace",
         ]
@@ -125,9 +174,10 @@ class ContainerSandbox:
             [
                 image,
                 "python",
+                "-u",
                 "-I",
                 "/workspace/__program__.py",
             ]
         )
 
-        return cmd  # noqa: F821
+        return cmd
