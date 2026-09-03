@@ -21,8 +21,6 @@ import json
 import os
 import sys
 from collections import defaultdict
-from dataclasses import asdict, is_dataclass
-from typing import Any
 
 # Allow running from the backend/ or backend/scripts/ directory
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -100,23 +98,12 @@ def main(argv=None) -> None:
             # Skip exercises not in the active pack's curriculum (e.g. retired IDs)
             continue
 
-        # 绕过 mypy 对 Exercise 类的静态属性检查
-        ex_any: Any = ex_meta
-        if hasattr(ex_any, "model_dump"):
-            ex_dict = ex_any.model_dump()
-        elif hasattr(ex_any, "dict"):
-            ex_dict = ex_any.dict()
-        elif is_dataclass(ex_meta):
-            ex_dict = asdict(ex_meta)
-        else:
-            ex_dict = vars(ex_meta)
-
-        row = compute_attempt_measures(pid, eid, grp, ex_dict, sim, args.window)
+        row = compute_attempt_measures(pid, eid, grp, ex_meta, sim, args.window)
         if args.cohort:
             row["cohort"] = args.cohort
         attempt_rows.append(row)
 
-        pairs = compute_calibration_pairs(pid, eid, grp, ex_dict, sim, args.window)
+        pairs = compute_calibration_pairs(pid, eid, grp, ex_meta, sim, args.window)
         calib_pairs.extend(pairs)
 
     # ── measures_by_attempt.jsonl ─────────────────────────────────────────────

@@ -200,7 +200,7 @@ _VALID_LEAK = {"none", "partial", "full"}
 
 
 def _check_planner(result: dict) -> bool:
-    return bool(
+    return (
         result.get("affective_state") in _VALID_AFFECTS
         and result.get("intervention") in _VALID_INTERVENTIONS
         and isinstance(result.get("confidence"), (int, float))

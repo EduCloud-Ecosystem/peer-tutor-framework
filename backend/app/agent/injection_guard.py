@@ -36,7 +36,7 @@ class InjectionGuard:
     - Content-free tracing (store verdict, never the text)
     """
 
-    def __init__(self) -> None:
+    def __init__(self):
         self._initialized = False
         self._llm: LLMClient | None = None
 
@@ -44,7 +44,7 @@ class InjectionGuard:
         """Check if guard is enabled by reading settings at runtime."""
         return settings.injection_guard_enabled
 
-    def _lazy_init(self) -> None:
+    def _lazy_init(self):
         """Initialize LLM client only when enabled and first used."""
         if not self._is_enabled():
             return
