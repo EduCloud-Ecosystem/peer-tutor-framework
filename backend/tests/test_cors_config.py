@@ -8,6 +8,7 @@ Covers:
   - explicit "null" origin parsing
   - preflight behavior for null origin (200) and unlisted origin (400)
 """
+
 from __future__ import annotations
 
 import importlib
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_settings_with(monkeypatch, cors_value: str | None):
     """Reload app.config with a patched CORS_ORIGINS env var."""
@@ -35,6 +37,7 @@ def _make_client(settings):
     # Patch the settings object used by main.py at import time
     import app.config as config_module
     import app.main as main_module
+
     config_module.settings = settings
 
     return importlib.reload(main_module).app
@@ -44,6 +47,7 @@ def _make_client(settings):
 # Config parsing tests
 # ---------------------------------------------------------------------------
 
+
 def test_default_cors_origins_include_dev_ports(monkeypatch):
     settings = _load_settings_with(monkeypatch, None)
     assert "http://localhost:5173" in settings.cors_origins
@@ -52,9 +56,7 @@ def test_default_cors_origins_include_dev_ports(monkeypatch):
 
 
 def test_whitespace_trimming(monkeypatch):
-    settings = _load_settings_with(
-        monkeypatch, "http://a.com, http://b.com ,http://c.com"
-    )
+    settings = _load_settings_with(monkeypatch, "http://a.com, http://b.com ,http://c.com")
     assert settings.cors_origins == ["http://a.com", "http://b.com", "http://c.com"]
 
 
@@ -71,6 +73,7 @@ def test_explicit_null_origin(monkeypatch):
 # ---------------------------------------------------------------------------
 # Preflight behavior tests
 # ---------------------------------------------------------------------------
+
 
 def _preflight(client, origin: str) -> int:
     response = client.options(
