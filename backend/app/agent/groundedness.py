@@ -8,12 +8,12 @@ response's substantive claims are traceable to passages present in
 
 Design principles:
 - Deterministic overlap/entailment check (no additional model call)
-- Inline citations attached to grounded claims
-- Ungrounded claims flagged in trace (not blocked — this is a signal)
-- Leak gate integrity: only sees passages that survived `screen_passages`
-- No-op when `knowledge()` returns None
-
-Trace event: additive, follows the `retrieval` event pattern (Slice F).
+- Inline claim-level citations attached to grounded claims
+- Ungrounded claims flagged in trace counts (not blocked — this is a signal)
+- Content-free tracing: records counts and passage IDs, never text
+- Leak gate integrity: runs before governance check, ensuring full response
+  with references passes through the leak gate
+- No-op when `knowledge()` returns None or empty
 """
 
 from __future__ import annotations
@@ -25,17 +25,18 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def to_marker(index: int) -> str:
+    """Return the inline citation marker, e.g. `[1]`."""
+    return f"[{index}]"
+
+
 class Citation:
     """Represents a citation to a retrieved passage."""
 
     def __init__(self, passage_id: str, citation_text: str, locator: str | None = None):
-        self.passage_id = passage_id
-        self.citation_text = citation_text
+        self.passage_id = str(passage_id) if passage_id is not None else "unknown"
+        self.citation_text = citation_text or "Reference"
         self.locator = locator
-
-    def to_marker(self, index: int) -> str:
-        """Return the inline citation marker, e.g. `[1]`."""
-        return f"[{index}]"
 
     def to_reference(self, index: int) -> str:
         """Return the full reference entry, e.g. `[1] Introduction to Statistics, §3.2`."""
@@ -50,123 +51,104 @@ class Citation:
 def check_groundedness(
     response: str,
     passages: list[dict],
-    trace: bool = True,
 ) -> tuple[str, dict[str, Any]]:
     """
     Check if the response is grounded in the retrieved passages.
 
-    Args:
-        response: The tutor's generated response (message)
-        passages: List of passage dicts with keys: id, text, citation, locator
-        trace: Whether to return trace data
-
     Returns:
         (updated_response, trace_data)
-        - updated_response: Response with inline citations added
-        - trace_data: Dict with passages_available, citations_used, ungrounded_fragments
-
-    Behavior:
-        - If no passages: return original response, trace_data with empty citations
-        - If claim grounded in passage: attach inline citation marker `[1]`
-        - If claim ungrounded: keep response as-is, flag in trace
-        - This is a SIGNAL, not a block — no regression in behavior
     """
     if not passages:
-        # No passages available -> no-op (same as today)
         return response, {
             "passages_available": 0,
             "citations_used": [],
             "citations_count": 0,
-            "ungrounded_fragments": [],
+            "claim_count": 0,
+            "ungrounded_count": 0,
+            "all_grounded": True,
             "check_ran": False,
             "reason": "no passages available",
         }
 
-    # Extract substantive claims from the response
     claims = _extract_claims(response)
 
     if not claims:
-        # No substantive claims -> no need for grounding check
         return response, {
             "passages_available": len(passages),
             "citations_used": [],
             "citations_count": 0,
-            "ungrounded_fragments": [],
+            "claim_count": 0,
+            "ungrounded_count": 0,
+            "all_grounded": True,
             "check_ran": True,
             "reason": "no substantive claims found",
         }
 
-    # Build a map of passage text -> Citation
-    passage_map: dict[str, Citation] = {}
+    # Build passage map handling malformed input gracefully
+    passage_map: list[tuple[str, Citation]] = []
     for p in passages:
-        passage_text = p.get("text", "").lower()
+        if not isinstance(p, dict):
+            continue
+        passage_text = str(p.get("text", "")).lower()
+        pid = p.get("id") or "unknown"
         if passage_text:
-            passage_map[passage_text] = Citation(
-                passage_id=p["id"],
-                citation_text=p.get("citation", ""),
-                locator=p.get("locator"),
+            passage_map.append(
+                (
+                    passage_text,
+                    Citation(
+                        passage_id=pid,
+                        citation_text=p.get("citation") or "Reference",
+                        locator=p.get("locator"),
+                    ),
+                )
             )
 
-    # Check each claim against passages
-    cited_claims: list[str] = []
-    ungrounded_claims: list[str] = []
-    citations_used: list[Citation] = []
-
-    updated_response = response
+    claim_citations: list[tuple[str, Citation]] = []
+    ungrounded_claims_count = 0
 
     for claim in claims:
-        grounded = False
-        for passage_text, citation in passage_map.items():
-            claim_lower = claim.lower()
-            if len(claim) > 10:
+        grounded_citation = None
+        claim_lower = claim.lower()
+        if len(claim) > 10:
+            for passage_text, citation in passage_map:
                 if claim_lower in passage_text or _fuzzy_match(claim_lower, passage_text):
-                    grounded = True
-                    # Check if citation already used
-                    if citation.passage_id not in [c.passage_id for c in citations_used]:
-                        citations_used.append(citation)
+                    grounded_citation = citation
                     break
 
-        if grounded:
-            cited_claims.append(claim)
+        if grounded_citation:
+            claim_citations.append((claim, grounded_citation))
         else:
-            ungrounded_claims.append(claim)
+            ungrounded_claims_count += 1
 
-    # If all claims are grounded, attach citations
-    if cited_claims and not ungrounded_claims:
-        updated_response = _attach_citations(response, citations_used)
-    # If some claims are ungrounded, keep response as-is (no regression)
-    # Trace will record the gap
+    updated_response = response
+    citations_used_ids: list[str] = []
+
+    # Attach inline citations to grounded claims regardless of ungrounded presence
+    if claim_citations:
+        updated_response, citations_used = _attach_inline_citations(response, claim_citations)
+        citations_used_ids = [c.passage_id for c in citations_used]
 
     trace_data: dict[str, Any] = {
         "passages_available": len(passages),
-        "citations_used": [c.passage_id for c in citations_used],
-        "citations_count": len(citations_used),
-        "ungrounded_fragments": ungrounded_claims[:5],
-        "check_ran": True,
-        "all_claims_grounded": len(ungrounded_claims) == 0,
+        "citations_used": citations_used_ids,
+        "citations_count": len(citations_used_ids),
         "claim_count": len(claims),
+        "ungrounded_count": ungrounded_claims_count,
+        "all_grounded": ungrounded_claims_count == 0,
+        "check_ran": True,
     }
 
     return updated_response, trace_data
 
 
 def _extract_claims(text: str) -> list[str]:
-    """
-    Extract substantive claims from the response text.
-
-    This is a simple deterministic extractor that splits on sentences
-    and filters out questions, greetings, and non-substantive phrases.
-
-    Returns a list of claim strings.
-    """
+    """Extract substantive claims from the response text."""
     if not text:
         return []
 
-    # Split into sentences (simple approach)
     sentences = re.split(r"[.!?]\s+", text)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
 
-    # Filter out non-substantive sentences
     non_substantive_patterns = [
         r"^(let\'?s|let us|try to|what about|can you|would you|how about|maybe we)",
         r"^(i think|i believe|i feel|in my opinion)",
@@ -177,17 +159,14 @@ def _extract_claims(text: str) -> list[str]:
     claims: list[str] = []
     for s in sentences:
         s_lower = s.lower()
-        # Skip questions
         if s.endswith("?"):
             continue
-        # Skip non-substantive patterns
         is_substantive = True
         for pattern in non_substantive_patterns:
             if re.match(pattern, s_lower, re.IGNORECASE):
                 is_substantive = False
                 break
         if is_substantive and len(s.split()) >= 3:
-            # Remove trailing punctuation
             s = s.rstrip(".!")
             claims.append(s)
 
@@ -195,9 +174,7 @@ def _extract_claims(text: str) -> list[str]:
 
 
 def _fuzzy_match(claim: str, passage: str) -> bool:
-    """
-    Fuzzy match: check if significant portions of claim appear in passage.
-    """
+    """Fuzzy match: check if significant portion of claim appears in passage."""
     if not claim or not passage:
         return False
 
@@ -207,7 +184,6 @@ def _fuzzy_match(claim: str, passage: str) -> bool:
 
     passage_words = set(passage.split())
 
-    # Stopwords to ignore
     stopwords = {
         "the",
         "a",
@@ -245,7 +221,6 @@ def _fuzzy_match(claim: str, passage: str) -> bool:
         "must",
     }
 
-    # Remove stopwords for better matching
     claim_words = claim_words - stopwords
     passage_words = passage_words - stopwords
 
@@ -253,53 +228,72 @@ def _fuzzy_match(claim: str, passage: str) -> bool:
         return False
 
     overlap_words = claim_words & passage_words
-    ratio = len(overlap_words) / len(claim_words)
-
-    # If more than 50% of significant words overlap, consider it matched
-    return ratio >= 0.5
+    return (len(overlap_words) / len(claim_words)) >= 0.5
 
 
-def _attach_citations(response: str, citations: list[Citation]) -> str:
+def _attach_inline_citations(
+    response: str,
+    claim_citations: list[tuple[str, Citation]],
+) -> tuple[str, list[Citation]]:
     """
-    Attach inline citations to the response.
-
-    Adds citation markers `[1]`, `[2]` at the end of sentences that
-    should be cited, and appends a References section.
-
-    Example output:
-        "The mean of category A is approximately 15 [1]. References: [1] ..."
+    Attach inline markers [1], [2] next to grounded claims in the body,
+    and append a References section at the bottom.
     """
-    if not citations:
-        return response
+    if not claim_citations:
+        return response, []
 
-    references = []
-    for idx, citation in enumerate(citations, 1):
-        references.append(citation.to_reference(idx))
+    citations_used: list[Citation] = []
+    citation_to_idx: dict[str, int] = {}
 
-    # If response already has citations, append to them
-    if "\n\nReferences:" in response or "\nReferences:" in response:
-        return response
+    for _, citation in claim_citations:
+        if citation.passage_id not in citation_to_idx:
+            citations_used.append(citation)
+            citation_to_idx[citation.passage_id] = len(citations_used)
 
-    ref_section = "\n\nReferences:\n" + "\n".join(references)
-    return response + ref_section
+    updated_response = response
+
+    for claim, citation in claim_citations:
+        idx = citation_to_idx[citation.passage_id]
+        marker = f" [{idx}]"
+
+        if claim in updated_response and f"[{idx}]" not in updated_response:
+            pattern = re.escape(claim) + r"([.!?]?)"
+
+            def _add_marker(match):
+                punct = match.group(1)
+                return (
+                    match.group(0)[: -len(punct)] + marker + punct  # noqa: B023
+                    if punct
+                    else match.group(0) + marker  # noqa: B023
+                )
+
+            updated_response = re.sub(pattern, _add_marker, updated_response, count=1)
+
+    references = [c.to_reference(idx) for idx, c in enumerate(citations_used, 1)]
+
+    if "\n\nReferences:" not in updated_response and "\nReferences:" not in updated_response:
+        ref_section = "\n\nReferences:\n" + "\n".join(references)
+        updated_response += ref_section
+
+    return updated_response, citations_used
 
 
 def get_groundedness_trace(
     passage_count: int,
     citations_used: list[str],
-    ungrounded_fragments: list[str],
+    ungrounded_count: int,
+    claim_count: int,
     all_grounded: bool,
 ) -> dict:
     """
     Build the additive trace event payload for groundedness.
-
-    Follows the same pattern as the `retrieval` event in Slice F.
-    Content-free: records citation IDs, never passage text.
+    Content-free: records citation IDs and counts, never passage or claim text.
     """
     return {
         "passages_available": passage_count,
         "citations_used": citations_used,
-        "ungrounded_count": len(ungrounded_fragments),
-        "ungrounded_fragments": ungrounded_fragments[:5],
+        "citations_count": len(citations_used),
+        "claim_count": claim_count,
+        "ungrounded_count": ungrounded_count,
         "all_grounded": all_grounded,
     }
