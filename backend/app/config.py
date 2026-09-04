@@ -150,9 +150,14 @@ class Settings:
         return self.database_url.startswith("postgres")
 
     cors_origins: list = field(
-        default_factory=lambda: _env(
-            "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
-        ).split(",")
+        default_factory=lambda: [
+            o.strip()
+            for o in _env(
+                "CORS_ORIGINS",
+                "null,http://localhost:5173,http://localhost:3000,http://localhost:63342,http://127.0.0.1:63342,http://localhost:8000",
+            ).split(",")
+            if o.strip()
+        ]
     )
 
     # --- Distress-routing layer (Slice G) — INSTITUTION + IRB OWNED ---------
