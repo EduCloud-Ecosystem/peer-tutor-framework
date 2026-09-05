@@ -39,6 +39,7 @@ telemetry the UI can ignore or surface.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from ..config import settings
@@ -49,8 +50,11 @@ from . import governance, memory, planner, reasoner, self_eval
 from . import overlay as overlay_mod
 from . import telemetry as tel
 from .context import _latest_student_message, build_context
+from .injection_guard import get_guard
 from .llm import LLMClient
 from .prompts import ABSTAIN_MESSAGE, CONTROL_MESSAGE
+
+logger = logging.getLogger(__name__)
 
 _GOV_PROSE = {
     "none": "—",
@@ -197,6 +201,78 @@ def _distress_turn(
     return final
 
 
+def _injection_turn(
+    ctx: dict, store: Store, pid: str, exercise: dict, mode: str, stance: str, pack, verdict
+) -> dict:
+    """Injection/jailbreak short-circuit. Deterministic, NO planner/reasoner/LLM
+    call. Surfaces a neutral frame that routes to human review and suppresses
+    normal tutoring. Content-free tracing only."""
+    learner = store.get_learner_state(pid)
+
+    # Bounded injection telemetry
+    injection_data = {
+        "triggered": True,
+        "status": verdict.status,
+        "score": verdict.score,
+        "model": verdict.model_used,
+    }
+    if verdict.error_category:
+        injection_data["error_category"] = verdict.error_category
+
+    final = {
+        "affective_state": "neutral",
+        "affect_reasoning": "injection signal — flagged for instructor review; tutoring paused",
+        "confidence": 1.0,
+        "intervention": "escalate",
+        "planner_note": "injection routing — flagged for human review",
+        "self_critique": "—",
+        "governance": "flag_escalate",
+        "memory": {"grasped": learner.get("grasped", []), "shaky": learner.get("shaky", [])},
+        "message": "I'm here to help with your learning, but I can't respond to that request. If you need help with the exercise, I'm happy to work through it with you.",
+        "check_question": None,
+        "components": {
+            "planner": {"target_concept": "—"},
+            "reasoner": {"raw_confidence": 1.0},
+            "self_eval": {"leak_risk": "none", "reasons": []},
+            "governance": {
+                "prose": "Injection detected → instructor flagged",
+                "blocked": False,
+                "reasons": ["injection_detected"],
+            },
+            "wellbeing_softened": False,
+            "overlay_declined": [],
+            # Content-free injection signal (no text, no PII, no raw exception)
+            "injection": injection_data,
+            "refines": 0,
+            "reasoning_effort": None,
+            "escalated": True,
+            "abstained": False,
+            "confidence_trajectory": {"planner": None, "reasoner": None, "self_eval": None},
+            "misconception_id": None,
+            "worked_example": None,
+            "learner_model": None,
+            "timings_ms": {},
+            "component_usage": {},
+            "model_tiers": settings.model_tiers,
+            "pack": pack.id,
+            "provider": settings.provider,
+            "stance": stance,
+        },
+    }
+    # Trace the injection event (content-free: verdict parameters only, never student text)
+    store.append_event(
+        make_event(
+            pid,
+            exercise["id"],
+            mode,
+            "injection",
+            injection_data,
+            stance=stance,
+        )
+    )
+    return final
+
+
 def _abstain(draft: dict) -> dict:
     """Override a low-confidence PEER draft into an honest abstention.
 
@@ -249,6 +325,30 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
         student_msg = _latest_student_message(ctx.get("recent_dialogue", []))
         if distress_mod.has_distress_signal(student_msg, distress_mod.extra_terms(settings)):
             return _distress_turn(ctx, store, pid, exercise, mode, stance, pack)
+
+    # Run injection check on the student's latest message BEFORE any generation.
+    # Off by default. If flagged, escalate to instructor (reuse existing path).
+    injection_telemetry = None
+    if settings.injection_guard_enabled:
+        student_msg = _latest_student_message(ctx.get("recent_dialogue", []))
+        guard = get_guard()
+        if guard is not None:
+            verdict = guard.check(student_msg)
+
+            injection_telemetry = {
+                "triggered": verdict.flagged,
+                "status": verdict.status,
+                "score": verdict.score,
+                "model": verdict.model_used,
+            }
+            if verdict.error_category:
+                injection_telemetry["error_category"] = verdict.error_category
+
+            if verdict.flagged:
+                logger.warning(
+                    f"Injection flagged: score={verdict.score:.3f}, model={verdict.model_used}"
+                )
+                return _injection_turn(ctx, store, pid, exercise, mode, stance, pack, verdict)
 
     if stance == "control":
         return _control_turn(payload, ctx, store, pid, exercise, mode, pack)
@@ -424,6 +524,58 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
         "shaky_concepts": shaky_cids,
     }
 
+    components = {
+        "planner": {
+            "target_concept": plan["target_concept"],
+            "confidence": confidence_trajectory["planner"],
+        },
+        "reasoner": {
+            "raw_confidence": round(reasoner_conf, 2),
+            "misconception_id": draft.get("misconception_id"),
+        },
+        "self_eval": {
+            "leak_risk": evaluation["leak_risk"],
+            "reasons": evaluation["reasons"],
+            # Goal-alignment quality signal (additive §6; None without goals).
+            "goal_alignment": evaluation.get("goal_alignment"),
+        },
+        "governance": {
+            "prose": _GOV_PROSE.get(gov["flag"], "—"),
+            "blocked": gov["block"],
+            "reasons": gov["reasons"],
+        },
+        # Wellbeing defense-in-depth (additive §6): a post-hoc berating-softener,
+        # NOT a deterministic gate. True iff an obviously berating draft was softened.
+        "wellbeing_softened": wellbeing_softened,
+        # Per-learner customization overlay (additive §6): which submitted fields the
+        # floor check DECLINED this turn (observable; never the raw declined value).
+        "overlay_declined": (ctx.get("overlay") or {}).get("declined", []),
+        "refines": refines,
+        # ---- calibrated-uncertainty telemetry (Step 3) ----
+        "reasoning_effort": reasoning_effort,  # effort of the final reasoner draft
+        "escalated": escalated,
+        "abstained": abstained,
+        "confidence_trajectory": confidence_trajectory,
+        # ---- F6 exploratory telemetry ----
+        "misconception_id": draft.get("misconception_id"),
+        # ---- Self-verifying worked example telemetry ----
+        "worked_example": we_telemetry,
+        # ---- Persistent learner model telemetry ----
+        "learner_model": lm_telemetry,
+        "timings_ms": timings,
+        # Per-component usage (additive §6): latency, tokens, cost per component.
+        "component_usage": tel.current_meter().by_component(),  # type: ignore[union-attr]  # the per-turn meter is set by run_turn for the turn's duration
+        "model_tiers": settings.model_tiers,
+        # §6 pack-agnostic envelope: pack id + generic execution provider
+        # (replaces a former domain-specific execution-backend telemetry field).
+        "pack": pack.id,
+        "provider": settings.provider,
+        "stance": stance,
+    }
+
+    if injection_telemetry:
+        components["injection"] = injection_telemetry
+
     final = {
         # ---- artifact-compatible contract ----
         "affective_state": plan["affective_state"],
@@ -438,54 +590,7 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
         "check_question": draft.get("check_question"),
         "worked_example": we_telemetry,  # telemetry only; UI may ignore
         # ---- richer telemetry (UI may ignore) ----
-        "components": {
-            "planner": {
-                "target_concept": plan["target_concept"],
-                "confidence": confidence_trajectory["planner"],
-            },
-            "reasoner": {
-                "raw_confidence": round(reasoner_conf, 2),
-                "misconception_id": draft.get("misconception_id"),
-            },
-            "self_eval": {
-                "leak_risk": evaluation["leak_risk"],
-                "reasons": evaluation["reasons"],
-                # Goal-alignment quality signal (additive §6; None without goals).
-                "goal_alignment": evaluation.get("goal_alignment"),
-            },
-            "governance": {
-                "prose": _GOV_PROSE.get(gov["flag"], "—"),
-                "blocked": gov["block"],
-                "reasons": gov["reasons"],
-            },
-            # Wellbeing defense-in-depth (additive §6): a post-hoc berating-softener,
-            # NOT a deterministic gate. True iff an obviously berating draft was softened.
-            "wellbeing_softened": wellbeing_softened,
-            # Per-learner customization overlay (additive §6): which submitted fields the
-            # floor check DECLINED this turn (observable; never the raw declined value).
-            "overlay_declined": (ctx.get("overlay") or {}).get("declined", []),
-            "refines": refines,
-            # ---- calibrated-uncertainty telemetry (Step 3) ----
-            "reasoning_effort": reasoning_effort,  # effort of the final reasoner draft
-            "escalated": escalated,
-            "abstained": abstained,
-            "confidence_trajectory": confidence_trajectory,
-            # ---- F6 exploratory telemetry ----
-            "misconception_id": draft.get("misconception_id"),
-            # ---- Self-verifying worked example telemetry ----
-            "worked_example": we_telemetry,
-            # ---- Persistent learner model telemetry ----
-            "learner_model": lm_telemetry,
-            "timings_ms": timings,
-            # Per-component usage (additive §6): latency, tokens, cost per component.
-            "component_usage": tel.current_meter().by_component(),  # type: ignore[union-attr]  # the per-turn meter is set by run_turn for the turn's duration
-            "model_tiers": settings.model_tiers,
-            # §6 pack-agnostic envelope: pack id + generic execution provider
-            # (replaces a former domain-specific execution-backend telemetry field).
-            "pack": pack.id,
-            "provider": settings.provider,
-            "stance": stance,
-        },
+        "components": components,
     }
 
     trace = {
