@@ -479,7 +479,6 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
             updated_message, trace_data = groundedness.check_groundedness(
                 draft["message"],
                 passages,
-                trace=True,
             )
             # Only update the message if citations were added
             if updated_message != draft["message"]:
