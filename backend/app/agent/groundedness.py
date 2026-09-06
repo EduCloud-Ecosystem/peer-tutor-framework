@@ -144,6 +144,8 @@ def check_groundedness(
 
 
 nlp = spacy.load("en_core_web_sm", disable=["ner"])
+
+
 def _extract_claims(text: str) -> list[str]:
     """Extract substantive knowledge claims using syntactic dependency parsing.
 
