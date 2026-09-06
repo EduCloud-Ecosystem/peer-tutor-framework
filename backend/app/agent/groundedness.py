@@ -22,6 +22,8 @@ import logging
 import re
 from typing import Any
 
+import spacy
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,7 @@ def check_groundedness(
             "reason": "no passages available",
         }
 
-    claims = _extract_claims(response)
+    claims = _extract_claims(response)  # noqa: F821
 
     if not claims:
         return response, {
@@ -141,34 +143,45 @@ def check_groundedness(
     return updated_response, trace_data
 
 
+nlp = spacy.load("en_core_web_sm", disable=["ner"])
 def _extract_claims(text: str) -> list[str]:
-    """Extract substantive claims from the response text."""
+    """Extract substantive knowledge claims using syntactic dependency parsing.
+
+    Filters out conversational fluff, imperative prompts, questions, and 1st/2nd
+    person modal statements while keeping declarative factual assertions.
+    """
     if not text:
         return []
 
-    sentences = re.split(r"[.!?]\s+", text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+    doc = nlp(text)
+    claims = []
 
-    non_substantive_patterns = [
-        r"^(let\'?s|let us|try to|what about|can you|would you|how about|maybe we)",
-        r"^(i think|i believe|i feel|in my opinion)",
-        r"^(that\'?s a good|great question|good point|excellent)",
-        r"^(yes|no|okay|alright|sure|absolutely)",
-    ]
+    for sent in doc.sents:
+        sent_str = sent.text.strip()
 
-    claims: list[str] = []
-    for s in sentences:
-        s_lower = s.lower()
-        if s.endswith("?"):
+        # 1. Skip short fragments, questions, and exclamations
+        if len(sent) < 4 or sent_str.endswith("?") or sent_str.endswith("!"):
             continue
-        is_substantive = True
-        for pattern in non_substantive_patterns:
-            if re.match(pattern, s_lower, re.IGNORECASE):
-                is_substantive = False
-                break
-        if is_substantive and len(s.split()) >= 3:
-            s = s.rstrip(".!")
-            claims.append(s)
+
+        # 2. Filter out imperative or transitional prompts (e.g., "Think about...", "Let's explore...")
+        first_token = sent[0]
+        if first_token.pos_ == "VERB" and not any(
+            tok.dep_ == "nsubj" for tok in first_token.children
+        ):
+            continue
+
+        # 3. Exclude 1st and 2nd person conversational framing (e.g., "I think", "We can see", "You should")
+        nsubj = next(
+            (tok for tok in sent if tok.dep_ in ("nsubj", "nsubjpass")),
+            None,
+        )
+        if nsubj and nsubj.lower_ in {"i", "we", "you", "me", "us"}:
+            continue
+
+        # 4. Require a valid declarative structure (Subject + Finite Verb / Auxiliary)
+        root = sent.root
+        if root.pos_ in ("VERB", "AUX") and nsubj is not None:
+            claims.append(sent_str.rstrip(".!"))
 
     return claims
 
