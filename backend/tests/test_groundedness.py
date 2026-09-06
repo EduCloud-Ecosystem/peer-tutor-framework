@@ -4,7 +4,7 @@ Tests for groundedness.py (CC-B3).
 
 Follows test_distress.py pattern:
 - Explicit grounded case: response traceable to passage → citation attached
-- Ungrounded case: claim not traceable → flagged in trace, response unchanged
+- Ungrounded case: claim not traceable → flagged in trace count, response unchanged
 - Leak gate integrity: only sees passages that survived screen_passages
 - No-op when knowledge() returns None
 """
@@ -56,11 +56,11 @@ def test_grounded_response_cites_passage():
     assert "Introduction to Statistics" in updated
     # Trace should record what was used
     assert trace["citations_used"] == ["passage_1"]
-    assert trace["all_claims_grounded"] is True
+    assert trace["all_grounded"] is True
 
 
 def test_ungrounded_claim_flagged_in_trace():
-    """Test that ungrounded claims are flagged in trace, response unchanged."""
+    """Test that ungrounded claims are flagged in trace counts, response unchanged."""
     passages = [
         {
             "id": "passage_1",
@@ -74,13 +74,48 @@ def test_ungrounded_claim_flagged_in_trace():
     updated, trace = groundedness.check_groundedness(response, passages)
 
     assert updated == response
-
-    assert len(trace["ungrounded_fragments"]) > 0
-    assert "category B" in trace["ungrounded_fragments"][0]
-    assert "40" in trace["ungrounded_fragments"][0]
-
-    assert trace["all_claims_grounded"] is False
+    assert trace["ungrounded_count"] > 0
+    assert trace["all_grounded"] is False
     assert trace["citations_used"] == []
+
+
+def test_mixed_grounded_and_ungrounded_claims():
+    """Test that grounded claims get citations even when ungrounded claims exist."""
+    passages = [
+        {
+            "id": "passage_1",
+            "text": "The mean of category A is 15.",
+            "citation": "Introduction to Statistics, Section 3.2",
+        }
+    ]
+    response = (
+        "The mean of category A is approximately 15. " "Category B has an ungrounded value of 999."
+    )
+
+    updated, trace = groundedness.check_groundedness(response, passages)
+
+    assert "[1]" in updated
+    assert "References:" in updated
+    assert trace["citations_used"] == ["passage_1"]
+    assert trace["ungrounded_count"] >= 1
+    assert trace["all_grounded"] is False
+
+
+def test_malformed_passage_metadata():
+    """Test handling of malformed or missing metadata gracefully."""
+    passages = [
+        {
+            "id": None,
+            "text": "The mean of category A is 15.",
+            "citation": None,
+        }
+    ]
+    response = "The mean of category A is approximately 15."
+
+    updated, trace = groundedness.check_groundedness(response, passages)
+
+    assert "References:" in updated
+    assert trace["citations_used"] == ["unknown"]
 
 
 def test_groundedness_no_op_when_no_passages():
@@ -121,28 +156,22 @@ def test_leak_gate_still_runs_before_groundedness(monkeypatch):
     before groundedness check ever sees them."""
     from app.agent.context import build_context
 
-    # Use a real exercise and real pack
     pack = get_active_pack()
-    # ✅ 添加 _ 前缀表示未使用，或直接使用
-    _ = pack.get_exercise("ds-foundations")  # 不需要存储
+    _ = pack.get_exercise("ds-foundations")
     store = InMemoryStore()
     learner = store.get_learner_state("p_test")
 
-    # Build context (which calls screen_passages)
     payload = _payload("p_test", "What is the mean?", exercise_id="ds-foundations")
     ctx = build_context(payload, learner, 0)
 
-    # Knowledge should only contain passages that survived screen_passages
     knowledge = ctx.get("knowledge", [])
     retrieval = ctx.get("_retrieval", {})
 
-    # Verify: any dropped passages are recorded (not in knowledge)
     if retrieval.get("dropped"):
         dropped_ids = [d["id"] for d in retrieval["dropped"]]
         knowledge_ids = [p["id"] for p in knowledge]
         assert all(d not in knowledge_ids for d in dropped_ids)
 
-    # Groundedness only sees knowledge, which already had solution stripped
     if knowledge:
         updated, trace = groundedness.check_groundedness("test", knowledge)
         assert trace["passages_available"] == len(knowledge)
@@ -165,7 +194,6 @@ def test_groundedness_in_orchestrator_flow(monkeypatch):
     assert "groundedness" in components, "Groundedness telemetry should be present"
 
     trace_data = components["groundedness"]
-    # Either check ran (if passages available) or didn't (if no passages)
     assert "check_ran" in trace_data or "passages_available" in trace_data
 
 
@@ -180,7 +208,6 @@ def test_groundedness_control_no_op():
 
     out = run_turn(payload, stub, store)
 
-    # ✅ 不存储 components 变量，直接检查
     assert "groundedness" not in out.get("components", {})
 
 
@@ -189,7 +216,8 @@ def test_groundedness_trace_event_format():
     trace = groundedness.get_groundedness_trace(
         passage_count=3,
         citations_used=["passage_1", "passage_2"],
-        ungrounded_fragments=["Claim not in passage"],
+        ungrounded_count=1,
+        claim_count=3,
         all_grounded=False,
     )
 
@@ -199,3 +227,4 @@ def test_groundedness_trace_event_format():
     assert trace["all_grounded"] is False
     # Content-free: no passage text
     assert "text" not in str(trace)
+    assert "fragments" not in str(trace)
