@@ -15,8 +15,6 @@ jobs:
       matrix:
         store: [sqlite, postgres]
 
-    # Postgres is started ONLY for the postgres matrix leg; the sqlite leg uses
-    # the zero-config default and needs no service.
     services:
       postgres:
         image: postgres:16
@@ -43,6 +41,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt -r requirements-packs.txt
+          python -m spacy download en_core_web_sm
 
       - name: Run suite (SQLite — zero-config default)
         if: matrix.store == 'sqlite'
@@ -57,7 +56,6 @@ jobs:
         run: python -m pytest -q
 
   # Slice H quality gate: lint + format-check + type-check, ONCE (not per db leg).
-  # No services/db needed. Config lives in backend/pyproject.toml.
   quality:
     name: quality (ruff + mypy)
     runs-on: ubuntu-latest
@@ -73,6 +71,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt -r requirements-packs.txt
+          python -m spacy download en_core_web_sm
 
       - name: ruff check (lint)
         working-directory: backend

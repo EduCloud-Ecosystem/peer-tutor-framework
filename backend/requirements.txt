@@ -7,7 +7,7 @@ psycopg[binary]>=3.1      # required for postgresql+psycopg:// DSN (pilot Postgr
 
 # Model layer (OpenAI-compatible client for the Jetstream2 Inference Service).
 openai>=1.40
-
+spacy>=3.7
 # Alternate provider (only needed if LLM_PROVIDER=anthropic):
 # anthropic>=0.39
 
