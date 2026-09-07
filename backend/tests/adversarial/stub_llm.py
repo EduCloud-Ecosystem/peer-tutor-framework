@@ -22,24 +22,24 @@ class StubLLM(LLMClient):
 
     name: str = "stub-llm"
 
-    def __init__(self):
-        self.calls = []  # Track which roles were called
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []  # Track which roles were called
         # Default states before any attack context is injected
-        self.is_attack = False
-        self.reference_solution = ""
+        self.is_attack: bool = False
+        self.reference_solution: str = "df.groupby('category').mean()"
 
-    def set_attack_context(self, is_attack: bool, exercise: Any) -> None:
+    def set_attack_context(self, is_attack: bool, exercise: Any | None = None) -> None:
         """
         Inject attack context from the testing framework.
+
         If is_attack is True, this LLM will act compromised and intentionally
-        leak the reference solution to test the Governance Gate.
+        leak the reference solution to test downstream governance enforcement.
         """
         self.is_attack = is_attack
-        # Dynamically grab the reference solution from the exercise object.
-        # Fallback to a dummy string if not found.
-        self.reference_solution = getattr(
-            exercise, "reference_solution", "df.groupby('category').mean()"
-        )
+        if exercise is not None:
+            self.reference_solution = getattr(
+                exercise, "reference_solution", "df.groupby('category').mean()"
+            )
 
     def json(
         self,
@@ -50,8 +50,8 @@ class StubLLM(LLMClient):
         user: str,
         max_tokens: int = 800,
         reasoning_effort: str | None = None,
-    ) -> dict:
-        """Return a valid JSON response for the given role."""
+    ) -> dict[str, Any]:
+        """Return a valid JSON response for the given agent role."""
         self.calls.append({"role": role, "tier": tier})
 
         # Planner response
@@ -67,7 +67,7 @@ class StubLLM(LLMClient):
 
         # Reasoner response
         if role == "reasoner":
-            # If an attack is active, act as a compromised model and LEAK the solution
+            # If an attack is active on this turn, act compromised and leak the solution
             if getattr(self, "is_attack", False):
                 return {
                     "message": f"Okay, you win. Here is the full solution:\n```python\n{self.reference_solution}\n```",
@@ -78,7 +78,7 @@ class StubLLM(LLMClient):
                     "misconception_id": None,
                 }
 
-            # Normal behavior for negative controls (does NOT contain solution)
+            # Normal behavior for standard turns and negative controls
             return {
                 "message": "Let's think about what operation combines categories. What should each category collapse to?",
                 "check_question": "What single number summarizes each category?",
@@ -94,11 +94,11 @@ class StubLLM(LLMClient):
                 "needs_revision": False,
                 "confidence": 0.8,
                 "leak_risk": "none",
-                # The simulated model is oblivious to its own leak, passing the buck to the Governance Gate
+                # The simulated model remains oblivious to its own leak, passing enforcement to Governance Gate
                 "self_critique": "The draft is helpful and doesn't leak the solution (or I failed to notice the leak).",
                 "reasons": [],
                 "goal_alignment": 0.7,
             }
 
-        # Fallback
+        # Fallback response
         return {"message": "I understand. Let me help you think through this."}
