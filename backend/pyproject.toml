@@ -44,6 +44,11 @@ python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 no_implicit_optional = true
+
+# Fix Mypy module path resolution ambiguity across root package boundaries
+explicit_package_bases = true
+mypy_path = "."
+
 # Slice I: the GLOBAL `ignore_missing_imports` is removed so a missing/mistyped
 # FIRST-PARTY import now errors (teeth). Genuinely stubless third-party libs get a
 # narrow per-module override below; libs that ship stubs get `types-*` in
