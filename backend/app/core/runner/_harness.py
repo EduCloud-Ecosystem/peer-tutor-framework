@@ -23,6 +23,41 @@ import traceback
 import io
 from contextlib import redirect_stdout, redirect_stderr
 
+MAX_COLLECTION_ITEMS = 10000
+MAX_DEPTH = 8
+
+def to_jsonable(value, depth=0):
+    if depth > MAX_DEPTH:
+        raise TypeError("value is nested too deeply")
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        if len(value) > MAX_COLLECTION_ITEMS:
+            raise TypeError("collection is too large")
+        return [to_jsonable(item, depth + 1) for item in value]
+    if isinstance(value, dict):
+        if len(value) > MAX_COLLECTION_ITEMS:
+            raise TypeError("mapping is too large")
+        return {str(key): to_jsonable(item, depth + 1) for key, item in value.items()}
+
+    # NumPy arrays/scalars expose JSON-compatible values through these methods.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return to_jsonable(tolist(), depth + 1)
+    item = getattr(value, "item", None)
+    if callable(item):
+        return to_jsonable(item(), depth + 1)
+
+    # Preserve enough structure for host-side dataframe checks without shipping
+    # the grading spec or reference values into the container.
+    if value.__class__.__name__ == "DataFrame":
+        return {
+            "__belay_type__": "dataframe",
+            "columns": to_jsonable(list(value.columns), depth + 1),
+            "data": to_jsonable(value.values.tolist(), depth + 1),
+        }
+    raise TypeError(f"unsupported value type: {type(value).__name__}")
+
 def main():
     namespace = {}
     stdout_buf = io.StringIO()
@@ -37,11 +72,15 @@ def main():
     except Exception:
         error_msg = traceback.format_exc()
 
-    # Extract standard JSON-serializable output variables
+    # Extract outputs that can cross the container boundary as JSON.
     extracted_vars = {}
     for key, value in namespace.items():
-        if not key.startswith("__") and isinstance(value, (int, float, str, bool, list, dict)):
-            extracted_vars[key] = value
+        if key.startswith("__"):
+            continue
+        try:
+            extracted_vars[key] = to_jsonable(value)
+        except (TypeError, ValueError, OverflowError):
+            pass
 
     payload = {
         "stdout": stdout_buf.getvalue(),
@@ -80,8 +119,8 @@ def run_student_in_sandbox(
     staged_files["student.py"] = source
 
     runner_res = runner.run_python(
-        source,
-        files=files or {},
+        _CONTAINER_EXECUTOR_STUB,
+        files=staged_files,
         artifacts=artifacts or ["result.json"],
         cpu_seconds=cpu_seconds,
         memory_mb=memory_mb,

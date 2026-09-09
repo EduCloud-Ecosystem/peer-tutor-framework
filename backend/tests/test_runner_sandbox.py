@@ -15,6 +15,7 @@ CC-B4: Adds security bypass tests for container runner.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
@@ -102,6 +103,39 @@ _CANNED = RunnerResult(
     error=None,
     artifacts={},
 )
+
+
+def test_host_harness_runs_wrapper_with_staged_student_source(monkeypatch):
+    """The host harness must run its wrapper and stage student.py beside it."""
+    from app.core.runner import _harness
+
+    captured = {}
+
+    def _spy(program, **kwargs):
+        captured["program"] = program
+        captured["files"] = kwargs["files"]
+        return RunnerResult(
+            ok=True,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            timed_out=False,
+            wall_ms=1.0,
+            error=None,
+            artifacts={
+                "result.json": json.dumps(
+                    {"stdout": "", "stderr": "", "error": None, "vars": {"answer": 42}}
+                )
+            },
+        )
+
+    monkeypatch.setattr(runner, "run_python", _spy)
+
+    result = _harness.run_student_in_sandbox("answer = 42", files={"data/input.csv": "1"})
+
+    assert captured["program"] == _harness._CONTAINER_EXECUTOR_STUB
+    assert captured["files"] == {"data/input.csv": "1", "student.py": "answer = 42"}
+    assert result["result_data"]["vars"]["answer"] == 42
 
 
 def test_student_code_never_runs_outside_the_runner(monkeypatch):
