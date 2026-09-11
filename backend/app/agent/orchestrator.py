@@ -388,26 +388,38 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
     if gov["block"]:
         draft = governance.safe_rewrite(draft, gov, exercise)
 
-    # --- NEW: Groundedness check (CC-B3) ---
-    # Runs AFTER governance (so it only sees leak-gated content) and BEFORE memory.
-    # This is a SIGNAL, not a block — it never changes the response if ungrounded.
+    # --- Groundedness check (CC-B3) — a SIGNAL, never a gate ---
+    # Runs AFTER governance, so it only ever sees a draft that already passed the
+    # leak gate, and it reads `ctx["knowledge"]`, which only ever holds passages that
+    # already survived `governance.screen_passages` upstream (context.build_context).
+    # It therefore cannot widen what can reach a student: it only ADDS citations for
+    # claims that trace to an already-screened passage. Ungrounded claims are left
+    # exactly as they are and reported as counts — this is a groundedness signal, a
+    # deliberately separate concern from leak prevention (CC-B3 §3), so it never
+    # drops, blocks, or rewrites prose.
     groundedness_data = None
-    if stance != "control":  # Control turns have no reasoner draft
-        # Get passages from context (already screened by governance.screen_passages)
-        passages = ctx.get("knowledge", [])
+    if stance != "control":  # control turns short-circuit before any reasoner draft
+        # Passages were already leak-screened before landing in ctx["knowledge"];
+        # absent/empty means the None-path (`_skeleton`) or no student query.
+        passages = ctx.get("knowledge") or []
         if passages:
-            # Check groundedness of the final message (after all revisions)
-            updated_message, trace_data = groundedness.check_groundedness(
+            # Check the FINAL message, after every refine/escalation/abstention override.
+            updated_message, groundedness_data = groundedness.check_groundedness(
                 draft["message"],
                 passages,
             )
-            # Only update the message if citations were added
+            # Only adopt the message when citations were actually attached. The
+            # comparison is exact: an ungrounded draft comes back byte-identical.
             if updated_message != draft["message"]:
                 draft["message"] = updated_message
-            groundedness_data = trace_data
         else:
             groundedness_data = {
                 "passages_available": 0,
+                "citations_used": [],
+                "citations_count": 0,
+                "claim_count": 0,
+                "ungrounded_count": 0,
+                "all_grounded": True,
                 "check_ran": False,
                 "reason": "no passages available",
             }
@@ -584,6 +596,31 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
                     "retrieved": retr["retrieved"],
                     "kept": retr["kept"],
                     "dropped": retr["dropped"],
+                },
+                stance=stance,
+            )
+        )
+    # CC-B3: additive groundedness event, emitted ONLY when retrieval ran (so the
+    # None-path / no-query turns stay exactly one `turn` row, byte-identical to
+    # before). Content-free by construction: passage IDS and counts, never passage
+    # text, never the draft, never the claim strings — the same trace-minimalism
+    # discipline the `retrieval` event follows. `available` is derived from the
+    # retrieval record rather than from `ctx["knowledge"]` so that even the ID list
+    # it reports is the post-screen survivor list.
+    if retr and groundedness_data is not None:
+        store.append_event(
+            make_event(
+                pid,
+                exercise["id"],
+                mode,
+                "groundedness",
+                {
+                    "available": retr["kept"],
+                    "citations_used": groundedness_data["citations_used"],
+                    "ungrounded": not groundedness_data["all_grounded"],
+                    "claim_count": groundedness_data["claim_count"],
+                    "ungrounded_count": groundedness_data["ungrounded_count"],
+                    "check_ran": groundedness_data["check_ran"],
                 },
                 stance=stance,
             )

@@ -39,7 +39,7 @@ def make_event(
         "exercise_id": exercise_id,
         "mode": mode,
         # run | turn | goal_set | goal_alignment_check | reflect | reflection_recorded
-        #     | overlay_set | retrieval | distress
+        #     | overlay_set | retrieval | groundedness | distress
         "event_type": event_type,
         "stance": stance,  # peer | oracle | control | None (run events)
         "payload": payload,
