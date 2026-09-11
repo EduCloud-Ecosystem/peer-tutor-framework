@@ -124,6 +124,32 @@ Source: `backend/app/agent/governance.py`, `backend/app/agent/goals.py`,
 `backend/app/agent/distress.py`, `PRIVACY.md`, `VALIDATION.md` Slice F (leak-over-retrieval)
 and Slice G (distress).
 
+## Citation grounding (CC-B3) — a signal, NOT a gate
+
+Retrieval answers a different question from governance, and the two must not be
+conflated. Governance asks "may this reach the student at all?" (a deterministic
+block/rewrite decision with a ground-truth oracle). Groundedness asks "is this claim
+traceable to something we retrieved?" — a *quality* signal with no oracle, so it never
+blocks, drops, or rewrites anything.
+
+After the governance gate and the final draft are settled, `agent/groundedness.py`
+extracts the draft's substantive claims and checks each against the passages in
+`ctx["knowledge"]`. Grounded claims get `Passage.citation` attached inline (`[1]`) plus a
+trailing `References:` block; ungrounded claims are left exactly as written and recorded
+as counts in the additive `groundedness` trace event (passage ids + counts, no text — the
+same trace-minimalism the `retrieval` event follows). This is deliberately a fourth
+separate layer alongside leak / tone / distress: rendering an ungrounded claim as a leak
+would silently censor correct tutoring on a false positive.
+
+The check adds no retrieval path and weakens no gate. `ctx["knowledge"]` is populated by
+`context.build_context` and holds ONLY `screen_passages` survivors, so the check is
+strictly downstream of the leak-over-retrieval gate; it reads that list, never retrieves,
+never screens, and cannot widen what a passage can reach.
+
+Source: `backend/app/agent/groundedness.py`, `backend/app/agent/orchestrator.py` (the
+post-generation pass), the `Passage.citation` / `KnowledgeBase` contract in
+`backend/app/core/domain/`, `VALIDATION.md` Slice P.
+
 **Academic grounding, added 2026-08-08 after a provider/prior-art scan** (full scan:
 `morph-full-and-provider-landscape-2026-08-08.md`, Cowork project). Two 2026 papers land
 close enough to this gate's own design to be citable prior art rather than internal

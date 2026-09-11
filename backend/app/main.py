@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
+from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import Response
 
 from .agent import distress as distress_mod
 from .agent import get_llm, run_turn

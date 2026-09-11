@@ -1140,7 +1140,86 @@ cd backend && ruff check . && ruff format --check . && mypy && python -m pytest 
 
 ---
 
-## 0. Environment (once) 🟢
+## Slice P — citation-grounded retrieval answers (CC-B3, additive)
+
+**Baseline floor (off HEAD `4eac6d2`): `385 passed, 7 skipped`.** `docs/prompts/CC-B3`'s
+premise: the datascience KB retrieves passages, each already carrying attribution +
+license in `Passage.citation`, but nothing constrained the tutor's *generated answer* to
+that material and nothing attributed a claim back to a specific passage. The citation
+data existed upstream and dead-ended before it reached the student.
+
+A partial implementation was already on the branch (`agent/groundedness.py` + unit tests,
+plus the Slice F pre-screening in `context.build_context`). Slice P completes the
+pipeline: the check is wired into the turn, the additive trace event exists, the module
+is import-safe, and the pipeline guarantees are tested end to end.
+
+**Where the check landed, and why.** In `orchestrator.run_turn`, AFTER
+`governance.check` / `safe_rewrite` and the wellbeing softener, BEFORE `memory.update`
+and the trace. After governance, because this check must only ever see a draft that has
+already passed the leak gate; not inside the Self-Evaluation step, because self-eval is a
+*pre*-governance model call whose output feeds the refine loop, whereas groundedness is a
+deterministic post-generation pass over the final draft (post-refine, post-escalation,
+post-abstention). Control turns short-circuit before the reasoner, so they never reach it.
+
+**How ungrounded claims are handled, and why that choice.** They are left **exactly as
+written** and recorded as counts + an `ungrounded: true` flag in the trace event. Of the
+three options CC-B3 §3 offers, this is the "leave as today's baseline behavior while the
+trace records the gap" option, chosen because dropping or softening prose would make a
+*groundedness* signal behave like a *leak* gate — and leak vs. tone vs. distress are
+already three deliberately separate layers for exactly that reason. A false positive here
+(calling a legitimate claim ungrounded) would then silently censor correct tutoring.
+Secondary consequence: when nothing is grounded, no `References:` block is written at all
+(a reference list nothing points at is noise, not a citation), so an ungrounded draft is
+byte-identical to its pre-Slice-P self.
+
+**No new retrieval path, no weakened gate.** `ctx["knowledge"]` is written by
+`context.build_context` and contains only `screen_passages` survivors; the check reads it
+and never retrieves, never screens, never widens what can reach a student. It is purely
+additive and downstream.
+
+What changed:
+
+- **Orchestrator wiring** (`agent/orchestrator.py`): the post-generation check now runs on
+  the FINAL draft and only adopts a rewritten message when citations were actually
+  attached; the `groundedness` telemetry block is complete on both paths (including the
+  no-passages path, which previously omitted the citation/claim keys).
+- **Additive trace event** (`orchestrator.py`, `store/repository.py`): a `groundedness`
+  event carrying `available` (surviving passage ids), `citations_used`, `ungrounded`,
+  `claim_count`, `ungrounded_count`, `check_ran` — ids and counts only, never passage
+  text, never the draft, never a claim string. Emitted only when retrieval ran, so the
+  None-path / no-query turn stays exactly one `turn` row. `make_event`'s documented
+  `event_type` list gained the new value.
+- **Import safety + shape tolerance** (`agent/groundedness.py`): the spaCy pipeline is now
+  loaded lazily (`@lru_cache`) instead of at import time — `orchestrator` imports this
+  module on every turn path, so a missing model wheel must not be able to take the tutor
+  loop down, and the load is far too slow to pay per import. Claim extraction degrades to
+  "no substantive claims found" (logging once) if the pipeline is unavailable.
+  `check_groundedness` now accepts both `Passage` value objects (what `screen_passages`
+  returns) and the projected dicts (what `ctx["knowledge"]` holds) via `_field`, so it is
+  callable at either site with no conversion layer.
+- **Tests** (`tests/test_groundedness.py`, 11 → 17, net +6): the three cases CC-B3 §5 names,
+  end to end through `run_turn` with a recording LLM double — (1) grounded response gets
+  the inline marker + `References:` block built from `Passage.citation` and a trace event
+  with `citations_used == [kept id]`, `ungrounded: false`; (2) ungrounded response is
+  untouched and flagged (`ungrounded: true`, `ungrounded_count >= 1`, no fabricated
+  citation, no reference block); (3) a solution-bearing passage is dropped by
+  `screen_passages` before the check runs and its text reaches neither the prompt, the
+  trace, nor the citation set. Plus: the event is content-free (exact key set, no passage
+  text), the None-path and no-query turns emit no event, control emits nothing, dict and
+  `Passage` inputs agree, and the leak gate's ordering guarantee is stated directly.
+  Two legacy tests whose assertions were conditional on whether retrieval happened
+  (`test_leak_gate_still_runs_before_groundedness`, `test_groundedness_in_orchestrator_flow`)
+  were replaced by deterministic equivalents that cannot pass vacuously.
+
+Reused the Slice F `screen_passages` gate and the Slice O corpus unchanged. Suite:
+**391 passed, 7 skipped** (385 baseline + 6); `ruff check`, `ruff format --check` and
+`mypy` green.
+
+```bash
+cd backend && uv run ruff check . && uv run ruff format --check . && mypy && python -m pytest -q
+```
+
+---
 
 Use the project venv, and **always invoke the suite as `python -m pytest`** — a bare
 `pytest` can resolve to another interpreter on PATH (e.g. conda base) that lacks the deps.

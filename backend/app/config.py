@@ -150,9 +150,14 @@ class Settings:
         return self.database_url.startswith("postgres")
 
     cors_origins: list = field(
-        default_factory=lambda: _env(
-            "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
-        ).split(",")
+        default_factory=lambda: [
+            o.strip()
+            for o in _env(
+                "CORS_ORIGINS",
+                "http://localhost:5173,http://localhost:3000,http://localhost:63342,http://127.0.0.1:63342,http://localhost:8000",
+            ).split(",")
+            if o.strip()
+        ]
     )
 
     # --- Distress-routing layer (Slice G) — INSTITUTION + IRB OWNED ---------
@@ -182,6 +187,16 @@ class Settings:
     # Optional institution-configured extra detection terms (comma-separated, IRB-owned)
     # on top of the conservative built-in vocabulary. Default empty.
     distress_signal_terms: str = field(default_factory=lambda: _env("DISTRESS_SIGNAL_TERMS", ""))
+    # Injection guard settings
+    injection_guard_enabled: bool = field(
+        default_factory=lambda: _envbool("INJECTION_GUARD_ENABLED", False)
+    )
+    injection_guard_model: str = field(
+        default_factory=lambda: _env("INJECTION_GUARD_MODEL", "meta-llama/Prompt-Guard-86M")
+    )
+    injection_guard_endpoint: str | None = field(
+        default_factory=lambda: _env("INJECTION_GUARD_ENDPOINT", "")
+    )
 
     @property
     def distress_configured(self) -> bool:
