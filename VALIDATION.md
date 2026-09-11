@@ -1312,7 +1312,7 @@ The active pack (datascience) runs untrusted student code through `core/runner`
 former quantum/Classiq platform section is removed (quantum deleted in Phase 1d).
 
 ```bash
-cd backend && python -m pytest tests/test_runner_sandbox.py    # 7 passed
+cd backend && python -m pytest tests/test_runner_sandbox.py    # 23 passed, 1 skipped
 ```
 
 Threat model is documented in the `app/core/runner` module docstring and the

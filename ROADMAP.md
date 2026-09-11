@@ -18,8 +18,8 @@ schedule or a commitment.
   Queued: `docs/prompts/CC-B1-local-guardrail-model.md`.
 - **Adversarial leak-gate regression benchmark.** The leak gate has no automated adversarial
   test suite today — only the fixed corpus/exercise tests in `tests/test_knowledge.py` and
-  the draft gate's own tests. ACL 2026's adversarial-student-agent methodology
-  (arXiv 2604.18660) is a reusable reference design for one. Queued:
+  the draft gate's own tests. ACL 2026's adversarial-student-agent methodology (arXiv 2604.18660) is a reusable
+  reference design for one. Queued:
   `docs/prompts/CC-B2-adversarial-leak-benchmark.md`.
 - **Citation-grounded retrieval answers.** The datascience KB (`kb.py`) retrieves passages
   but nothing constrains or attributes the tutor's generated answer back to a specific
@@ -72,8 +72,8 @@ schedule or a commitment.
   Embeddings, if added, run locally, never a hosted API.
   Source: `app/knowledge/index.py`, `app/knowledge/corpus_kb.py`, `ARCHITECTURE.md`.
 - **Instructor mode.** There is no authenticated role or privileged mode today: the API has
-  no auth, and "instructor" appears only as prompt wording and the `flag_escalate` label
-  ("Flagged for instructor"). **Now designed in-tree: `INSTRUCTOR_MODE.md`** (July 2026) —
+  no auth, and "instructor" appears only as prompt wording and the `flag_escalate` label ("Flagged for instructor").
+  **Now designed in-tree: `INSTRUCTOR_MODE.md`** (July 2026) —
   pluggable auth dependency (token / OIDC via Waypoint Keycloak), a deterministic,
   content-free instructor surface (escalation queue, aggregates with a suppression floor,
   status), the `events.jsonl` exposure closed, goals/reflections and grades excluded by
@@ -84,9 +84,8 @@ schedule or a commitment.
 
 ## Deferred edges
 
-- **Containerized runner.** The current runner is an out-of-process sandbox; a
-  containerized runner (matching Quad's adversarial-containment posture) is the recorded
-  roadmap convergence point.
+- **Containerized runner (Completed in CC-B4).** The sandbox runner now executes student code within an isolated Docker
+  container with host-side harness orchestration (`core/runner/_sandbox.py`).
   Source: `VALIDATION.md` ("the containerized runner is the roadmap convergence point";
   the Phase 1b closing roadmap step), `backend/app/packs/datascience/specs/GRADING_SPEC.md`
   ("containerized runner is the roadmap convergence point").

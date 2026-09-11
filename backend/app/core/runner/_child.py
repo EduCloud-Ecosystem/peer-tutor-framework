@@ -13,6 +13,7 @@ adversarial containment.
 
 import os
 import sys
+from typing import Any
 
 
 def _set_limits() -> None:
@@ -20,44 +21,36 @@ def _set_limits() -> None:
         import resource
     except ImportError:  # non-POSIX; limits unavailable
         return
+
     cpu = os.environ.get("PTF_CPU_SECONDS")
     if cpu:
         c = int(cpu)
         try:
-            resource.setrlimit(resource.RLIMIT_CPU, (c, c + 1))
+            resource.setrlimit(resource.RLIMIT_CPU, (c, c + 1))  # type: ignore[attr-defined]
         except (ValueError, OSError):
             pass
+
     mem = os.environ.get("PTF_MEMORY_MB")
     if mem and int(mem) > 0:
         nbytes = int(mem) * 1024 * 1024
-        # RLIMIT_AS (address space) is the strict limit on Linux; on macOS the
-        # BLAS/virtual-memory accounting makes it unreliable (it may fail to set
-        # or break numpy import), so failures are swallowed — see VALIDATION.
         for name in ("RLIMIT_AS", "RLIMIT_DATA"):
             lim = getattr(resource, name, None)
             if lim is None:
                 continue
             try:
-                resource.setrlimit(lim, (nbytes, nbytes))
+                resource.setrlimit(lim, (nbytes, nbytes))  # type: ignore[attr-defined]
             except (ValueError, OSError):
                 pass
 
 
 def _block_network() -> None:
-    """Make outbound network unreachable from inside the child.
-
-    NOTE: this is a *process-level* guard (it neutralizes the socket connection
-    primitives), not an OS route/namespace block. numpy/pandas stay importable
-    because nothing is removed from sys.modules — only the connect paths raise.
-    An airtight no-route guarantee needs container/namespace privileges; that is
-    the containerized-runner roadmap item (see VALIDATION threat model).
-    """
+    """Make outbound network unreachable from inside the child."""
     import socket
 
-    def _blocked(*_a, **_k):
+    def _blocked(*_a: Any, **_k: Any) -> None:
         raise OSError("network access is disabled in the sandbox runner")
 
-    socket.socket = _blocked  # type: ignore[assignment]
+    socket.socket = _blocked  # type: ignore[misc, assignment]
     socket.create_connection = _blocked  # type: ignore[assignment]
     if hasattr(socket, "create_server"):
         socket.create_server = _blocked  # type: ignore[assignment]

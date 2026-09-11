@@ -18,66 +18,12 @@ from app.agent import goals as goals_mod
 from app.config import settings
 from app.core.registry import get_active_pack
 from app.store import InMemoryStore
+from conftest import _CallStub, _payload
 
 _EX = get_active_pack().get_exercise("ds-foundations")
 _DISTRESS_MSG = "honestly I want to die, I can't do this anymore"
 _DISTRESS_SNIPPET = "want to die"  # the distinctive input snippet (privacy probe)
 _DESPAIR_MSG = "I feel hopeless and want to give up on this degree"  # NOT a crisis signal
-
-
-def _payload(pid, student_text=None, stance="peer"):
-    recent = [{"who": "student", "text": student_text}] if student_text else []
-    return {
-        "participant_id": pid,
-        "exercise": _EX,
-        "event": "chat",
-        "mode": "study",
-        "stance": stance,
-        "source": "import pandas as pd",
-        "result": {
-            "ok": True,
-            "goalMet": False,
-            "metric": None,
-            "pack": {"id": "datascience", "summary": "0/1 checks passed"},
-        },
-        "recent": recent,
-        "signals": None,
-    }
-
-
-class _CallStub:
-    """Records which roles were called; returns benign (non-leaking) outputs so a
-    NON-suppressed turn produces a normal tutor message."""
-
-    def __init__(self):
-        self.roles = []
-
-    def json(self, *, role, tier, system, user, max_tokens=800, reasoning_effort=None):
-        self.roles.append(role)
-        if role == "planner":
-            return {
-                "affective_state": "curious",
-                "affect_reasoning": "x",
-                "intervention": "co_reason",
-                "target_concept": "g",
-                "planner_note": "n",
-                "confidence": 0.8,
-            }
-        if role == "reasoner":
-            return {
-                "message": "What single number should each category collapse to?",
-                "check_question": None,
-                "confidence": 0.8,
-                "grasped": [],
-                "shaky": [],
-            }
-        return {
-            "needs_revision": False,
-            "confidence": 0.8,
-            "leak_risk": "none",
-            "self_critique": "ok",
-            "reasons": [],
-        }
 
 
 def _events(store, pid):
