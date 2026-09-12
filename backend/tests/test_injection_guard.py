@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from app.agent import run_turn
 from app.agent.injection_guard import InjectionGuard, get_guard
 from app.agent.orchestrator import _injection_turn
 from app.config import settings
 from app.core.registry import get_active_pack
 from app.store import InMemoryStore
-from conftest import _events
+from conftest import _CallStub, _events, _payload
 
 _EX = get_active_pack().get_exercise("ds-foundations")
 
@@ -213,3 +214,113 @@ def test_no_verbatim_injection_text_in_trace(monkeypatch):
     assert "status" in events[0]["payload"]
     assert "text" not in events[0]["payload"]
     assert "error" not in events[0]["payload"]  # Ensure deprecated open string is gone
+
+
+# ── Every enabled check is recorded, on both turn paths ──────────────────────
+#
+# The screen runs pre-generation, BEFORE the stance dispatch, so every stance that reaches
+# a turn has already computed a verdict. These tests lock the "every enabled check leaves a
+# content-free record" guarantee on the ordinary path AND on the control short-circuit,
+# which builds its own envelope and would otherwise be the one turn that records nothing.
+
+
+def _sovereign_client(flagged: bool, confidence: float) -> MagicMock:
+    """A mocked sovereign client class whose one call returns a bounded JSON verdict."""
+    client_cls = MagicMock()
+    client_cls.return_value.json.return_value = {"flagged": flagged, "confidence": confidence}
+    return client_cls
+
+
+def _reset_guard_singleton(monkeypatch):
+    """Drop the cached singleton so the turn builds THIS test's client, not a stale one."""
+    import app.agent.injection_guard as guard_mod
+
+    monkeypatch.setattr(guard_mod, "_guard_instance", None)
+
+
+def test_safe_check_is_recorded_on_a_peer_turn(monkeypatch):
+    """A check that did NOT flag still records status/score/model on the ordinary path."""
+    _enable_guard(monkeypatch)
+    _reset_guard_singleton(monkeypatch)
+    monkeypatch.setattr(
+        "app.agent.injection_guard.SovereignLLMClient", _sovereign_client(False, 0.05)
+    )
+
+    store = InMemoryStore()
+    text = "Can you help me with this exercise?"
+    out = run_turn(_payload("p_safe", text, stance="peer"), _CallStub(), store)
+
+    expected = {
+        "triggered": False,
+        "status": "safe",
+        "score": 0.05,
+        "model": "llama-3-8b-instruct",
+    }
+    assert out["components"]["injection"] == expected
+
+    row = _events(store, "p_safe")[0]
+    assert row["event_type"] == "turn"
+    assert row["payload"]["telemetry"]["injection"] == expected
+    # Content-free: the learner's message is nowhere in the record.
+    assert text not in store.export_jsonl("p_safe")
+
+
+def test_safe_check_is_recorded_on_a_control_turn(monkeypatch):
+    """The control short-circuit records the verdict it already computed."""
+    _enable_guard(monkeypatch)
+    _reset_guard_singleton(monkeypatch)
+    monkeypatch.setattr(
+        "app.agent.injection_guard.SovereignLLMClient", _sovereign_client(False, 0.05)
+    )
+
+    store = InMemoryStore()
+    text = "Can you help me with this exercise?"
+    out = run_turn(_payload("p_ctrl_trace", text, stance="control"), _CallStub(), store)
+
+    expected = {
+        "triggered": False,
+        "status": "safe",
+        "score": 0.05,
+        "model": "llama-3-8b-instruct",
+    }
+    assert out["components"]["injection"] == expected
+
+    row = _events(store, "p_ctrl_trace")[0]
+    assert row["event_type"] == "turn"
+    assert row["payload"]["telemetry"]["injection"] == expected
+    assert text not in store.export_jsonl("p_ctrl_trace")
+
+
+def test_unreachable_classifier_is_recorded_and_fails_open(monkeypatch):
+    """Unreachable ⇒ the turn still tutors, and the miss is traced with a bounded status."""
+    _enable_guard(monkeypatch)
+    _reset_guard_singleton(monkeypatch)
+
+    class _Unreachable:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("no route to the sovereign host")
+
+    monkeypatch.setattr("app.agent.injection_guard.SovereignLLMClient", _Unreachable)
+
+    store = InMemoryStore()
+    out = run_turn(_payload("p_down", "hello", stance="peer"), _CallStub(), store)
+
+    assert out["components"]["injection"]["status"] == "unavailable"
+    assert out["components"]["injection"]["error_category"] == "INIT_FAILED"
+    assert out["components"]["injection"]["triggered"] is False
+    # Fail-open: the student was still tutored, not blocked by infrastructure.
+    assert out["intervention"] != "escalate"
+    assert out["message"]
+    # Content-free: the raw exception text never reaches the trace.
+    assert "no route to the sovereign host" not in store.export_jsonl("p_down")
+
+
+def test_disabled_guard_adds_nothing_to_a_control_turn(monkeypatch):
+    """Off by default: no verdict, no key, no event — the control turn is unchanged."""
+    monkeypatch.setattr(settings, "injection_guard_enabled", False)
+
+    store = InMemoryStore()
+    out = run_turn(_payload("p_ctrl_off", "hello", stance="control"), _CallStub(), store)
+
+    assert "injection" not in out["components"]
+    assert "injection" not in _events(store, "p_ctrl_off")[0]["payload"]["telemetry"]
