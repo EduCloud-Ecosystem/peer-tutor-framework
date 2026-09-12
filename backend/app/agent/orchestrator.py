@@ -66,14 +66,65 @@ _GOV_PROSE = {
 
 
 def _control_turn(
-    payload: dict, ctx: dict, store: Store, pid: str, exercise: dict, mode: str, pack
+    payload: dict,
+    ctx: dict,
+    store: Store,
+    pid: str,
+    exercise: dict,
+    mode: str,
+    pack,
+    injection_telemetry: dict | None = None,
 ) -> dict:
     """Bypass the peer loop for the control condition.
 
     No planner/reasoner/self_eval calls are made. A fixed support message is
     returned and a trace event is emitted so condition integrity is auditable.
+
+    The CC-B1 injection screen runs BEFORE the stance dispatch, so a control turn already
+    computed a verdict; ``injection_telemetry`` carries it here for the same reason the
+    ordinary turn path carries it — the "every enabled check is recorded" guarantee has no
+    stance exemption, and a control turn must not be the one turn whose check left no
+    record.
     """
     learner = store.get_learner_state(pid)
+    components = {
+        "planner": {"target_concept": "—"},
+        "reasoner": {"raw_confidence": 1.0},
+        "self_eval": {"leak_risk": "none", "reasons": []},
+        "governance": {"prose": "—", "blocked": False, "reasons": []},
+        # Wellbeing softener never runs in control (no reasoner draft).
+        "wellbeing_softened": False,
+        # No overlay is consulted in control (no reasoner); nothing declined here.
+        "overlay_declined": [],
+        "refines": 0,
+        # Step 3 telemetry — no loop ran, so these are null/false by design.
+        "reasoning_effort": None,
+        "escalated": False,
+        "abstained": False,
+        "confidence_trajectory": {"planner": None, "reasoner": None, "self_eval": None},
+        # F6 exploratory telemetry — always null for control (no reasoner).
+        "misconception_id": None,
+        # Self-verifying worked examples — null for control (no reasoner).
+        "worked_example": None,
+        # Persistent learner model — null for control (no loop).
+        "learner_model": None,
+        "timings_ms": {},
+        # Per-component usage (additive §6): control runs no LLM calls.
+        "component_usage": {},
+        "model_tiers": settings.model_tiers,
+        # §6 pack-agnostic envelope: pack id + generic execution provider
+        # (replaces a former domain-specific execution-backend telemetry field).
+        "pack": pack.id,
+        "provider": settings.provider,
+        "stance": "control",
+    }
+
+    # CC-B1: an enabled injection check that did NOT flag is still recorded — content-free
+    # (bounded status/score/model only, never the learner's message), appended last so the
+    # disabled path keeps the exact key set and order it had before this layer existed.
+    if injection_telemetry:
+        components["injection"] = injection_telemetry
+
     final = {
         "affective_state": "curious",
         "affect_reasoning": "control condition — no peer loop",
@@ -85,37 +136,7 @@ def _control_turn(
         "memory": {"grasped": learner.get("grasped", []), "shaky": learner.get("shaky", [])},
         "message": CONTROL_MESSAGE,
         "check_question": None,
-        "components": {
-            "planner": {"target_concept": "—"},
-            "reasoner": {"raw_confidence": 1.0},
-            "self_eval": {"leak_risk": "none", "reasons": []},
-            "governance": {"prose": "—", "blocked": False, "reasons": []},
-            # Wellbeing softener never runs in control (no reasoner draft).
-            "wellbeing_softened": False,
-            # No overlay is consulted in control (no reasoner); nothing declined here.
-            "overlay_declined": [],
-            "refines": 0,
-            # Step 3 telemetry — no loop ran, so these are null/false by design.
-            "reasoning_effort": None,
-            "escalated": False,
-            "abstained": False,
-            "confidence_trajectory": {"planner": None, "reasoner": None, "self_eval": None},
-            # F6 exploratory telemetry — always null for control (no reasoner).
-            "misconception_id": None,
-            # Self-verifying worked examples — null for control (no reasoner).
-            "worked_example": None,
-            # Persistent learner model — null for control (no loop).
-            "learner_model": None,
-            "timings_ms": {},
-            # Per-component usage (additive §6): control runs no LLM calls.
-            "component_usage": {},
-            "model_tiers": settings.model_tiers,
-            # §6 pack-agnostic envelope: pack id + generic execution provider
-            # (replaces a former domain-specific execution-backend telemetry field).
-            "pack": pack.id,
-            "provider": settings.provider,
-            "stance": "control",
-        },
+        "components": components,
     }
     trace = {
         "event": ctx["event"],
@@ -351,7 +372,7 @@ def _run_turn(payload: dict, llm: LLMClient, store: Store) -> dict:
                 return _injection_turn(ctx, store, pid, exercise, mode, stance, pack, verdict)
 
     if stance == "control":
-        return _control_turn(payload, ctx, store, pid, exercise, mode, pack)
+        return _control_turn(payload, ctx, store, pid, exercise, mode, pack, injection_telemetry)
 
     timings: dict[str, float] = {}
 
