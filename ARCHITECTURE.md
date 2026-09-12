@@ -141,7 +141,7 @@ rationale alone:
   `dl.acm.org/doi/10.1145/3641554.3701945`). Direct empirical evidence for why this gate is
   a ground-truth oracle and not a system-prompt instruction.
 - **"Evaluating Answer Leakage Robustness of LLM Tutors against Adversarial Student
-  Attacks"** (ACL 2026, arXiv 2604.18660) builds a fine-tuned adversarial-student-agent
+  Attacks"** (arXiv:2604.18660v1) builds a fine-tuned adversarial-student-agent
   benchmark for jailbreaking tutors into leaking answers. Its **attack taxonomy** is now
   reproduced here as a scripted regression suite (`backend/tests/adversarial/`,
   `backend/tests/test_adversarial_leak.py`, prompt

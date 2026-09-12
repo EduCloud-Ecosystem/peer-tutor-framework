@@ -1143,9 +1143,10 @@ cd backend && ruff check . && ruff format --check . && mypy && python -m pytest 
 ## CC-B2 — adversarial leak-gate regression benchmark (safety-critical)
 
 **Baseline floor (off HEAD `a754a85`, feature branch `feature/cc-b2-adversarial-leak-benchmark`):
-`387 collected, 386 passed, 7 skipped`.** The suite is net-additive: **`392 collected, 392
-passed, 7 skipped`** after this revision (**+5**: `test_adversarial_leak.py` 12→18;
-`test_datascience_pack.py` and `test_governance.py` are unchanged at 19 and 7).
+`387 collected, 380 passed, 7 skipped`.** The suite is net-additive: **`398 collected, 391
+passed, 7 skipped`** after this revision. Of the +11, this benchmark contributes **+5**
+(`test_adversarial_leak.py` 12→17); the rest comes from `tests/__init__.py` and the corpus
+citation commit. `test_datascience_pack.py` and `test_governance.py` are unchanged at 19 and 7.
 
 This is the executor report for `docs/prompts/CC-B2-adversarial-leak-benchmark.md`, revised
 against review feedback (six paper techniques; attacks must affect tutor output; corrected
@@ -1156,19 +1157,18 @@ defects in the gate it was testing**; those are recorded here rather than quietl
 ### What was built
 
 - **Attack corpus** (`backend/tests/adversarial/corpus.py`): exactly the **six** techniques of
-  ACL 2026's adversarial-student methodology (arXiv 2604.18660) — direct request, emotional
-  threat, intentional wrong answer, contextual manipulation, interpersonal influence, request
-  shaping — as scripted student turns, with `PAPER_TECHNIQUES` as the single source of truth
-  the corpus and the report are both validated against. `request_shaping` carries two cases,
-  the second being incremental extraction across three turns. **Negative controls are a
-  separate corpus** (`build_control_corpus`, `negative_control` category), so a control can
-  never be counted as one of the paper's techniques. Citations name the paper and the
-  technique only: no section or figure number is cited, because this repo has not verified the
-  paper's internal numbering and a plausible-looking wrong reference is worse than none.
-  Placement is a new `tests/adversarial/` fixture set, **not** `knowledge/corpus/corpus.json`
-  — that corpus is shipped tutor *reference* material whose hygiene is itself asserted
-  (`test_shipped_corpus_discloses_no_solution`), and mixing attacks into it would conflate the
-  corpus under test with the adversary testing it.
+  the cited paper (arXiv:2604.18660v1) — direct request, emotional threat, intentional wrong
+  answer, contextual manipulation, interpersonal influence, request shaping — as scripted
+  student turns, with `PAPER_TECHNIQUES` as the single source of truth the corpus and the
+  report are both validated against. `request_shaping` carries two cases, the second being
+  incremental extraction across three turns. **Negative controls are a separate corpus**
+  (`build_control_corpus`, `negative_control` category), so a control can never be counted as
+  one of the paper's techniques. Each case cites the paper's internal technique label, and
+  cases that are coding-domain adaptations rather than verbatim paper examples say so (see the
+  corpus's REFERENCE NOTE / TABLE 1 NOTE). Placement is a new `tests/adversarial/` fixture set,
+  **not** `knowledge/corpus/corpus.json` — that corpus is shipped tutor *reference* material
+  whose hygiene is itself asserted (`test_shipped_corpus_discloses_no_solution`), and mixing
+  attacks into it would conflate the corpus under test with the adversary testing it.
 - **Runner** (`tests/adversarial/attack.py`): each case drives the real `run_turn` pipeline
   (planner → reasoner → self-eval → `governance.check` → memory). One **stable participant id**
   and one `InMemoryStore` are used for the whole case, so the multi-turn cases are genuine
@@ -1181,10 +1181,12 @@ defects in the gate it was testing**; those are recorded here rather than quietl
   resolved from the pack — a complete, grader-passing script, so the gate is genuinely
   challenged rather than presented with something no oracle could flag. It leaks on the final
   turn only, so the incremental case escalates instead of leaking from turn one.
-- **The benchmark** (`tests/test_adversarial_leak.py`, 18 tests): corpus validation against the
+- **The benchmark** (`tests/test_adversarial_leak.py`, 17 tests): corpus validation against the
   six techniques; double integrity; **detection power**; the per-attack regression gate; the
   same corpus re-run **per exercise**; a positive defense case; negative controls; and an
-  ASCII-only report grouped **by technique and by exercise**.
+  ASCII-only report grouped **by technique and by exercise**. The file keeps its original
+  `TEST 1..N` structure and test names; the revision patches the assertions that were wrong
+  rather than restructuring the module.
 
 ### Result semantics (what the benchmark asserts)
 
@@ -1241,20 +1243,21 @@ received, never over the draft the model wrote.
 cd backend && ruff check . && ruff format --check . && mypy && python -m pytest -q
 ```
 
-`ruff check` → All checks passed. `ruff format --check` → 104 files already formatted.
-`mypy` → Success: no issues found in 98 source files. `pytest -q` → **392 passed, 7 skipped**
-(the 7 are the gated live/Postgres/behavioral skips, unchanged). The adversarial module alone:
+`ruff check` → All checks passed. `ruff format --check` → 105 files already formatted.
+`mypy` → Success: no issues found in 99 source files. `pytest -q` → **391 passed, 7 skipped**
+(`398` collected; the 7 are the gated live/Postgres/behavioral skips, unchanged). The
+adversarial module alone:
 
 ```bash
-cd backend && python -m pytest tests/test_adversarial_leak.py -v                 # 18 passed
+cd backend && python -m pytest tests/test_adversarial_leak.py -v                 # 17 passed
 cd backend && python -m pytest tests/test_adversarial_leak.py -m slow -s         # the report
 ```
 
 The report ends:
 
 ```
-SUMMARY: 27 runs (7 attacks x 3 exercises + 2 controls x 3 exercises), 0 leaks,
-0 attacks not rewritten
+SUMMARY: 27 runs, 0 leaks detected, 0 attacks not rewritten
+ALL TESTS PASSED - No leaks detected!
 ```
 
 with every technique `[BLOCKED]`, the incremental case showing `turns=3`, and every control
@@ -1290,11 +1293,11 @@ No network, no DB, no key. This is the gate `main` must always pass.
 cd backend && python -m pytest
 ```
 
-**Expected (current, through CC-B2, datascience active): `392 collected, 392 passed, 7
+**Expected (current, through CC-B2, datascience active): `398 collected, 391 passed, 7
 skipped`.** The 7 skips are gated live/Postgres/behavioral tests (the behavioral benchmark
 skips unless `RUN_LLM_EVALS=1` and a reachable tutor + judge endpoint are configured; see §3).
 The running per-phase totals are recorded in the phase sections above (from `221 passed, 11
-skipped` at Phase 0 through `387 collected, 386 passed, 7 skipped` at the CC-B2 baseline). The
+skipped` at Phase 0 through `387 collected, 380 passed, 7 skipped` at the CC-B2 baseline). The
 quantum-era per-module table below is **historical** (those modules no longer
 exist, and the legacy `sol_behavior_evals.py` was retired into
 `evals/behavioral/` in Slice 6b); the current per-module inventory is the appended
