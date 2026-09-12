@@ -192,5 +192,17 @@ class Settings:
             and "[FILL-IN" not in self.distress_escalation_target
         )
 
+    # --- Injection Guard (CC-B1 Compliance) ----------------------------------
+    # OFF by default. Dedicated sovereign classifier configuration.
+    injection_guard_enabled: bool = field(
+        default_factory=lambda: _envbool("INJECTION_GUARD_ENABLED", False)
+    )
+    injection_guard_endpoint: str | None = field(
+        default_factory=lambda: os.environ.get("INJECTION_GUARD_ENDPOINT")
+    )
+    injection_guard_model: str | None = field(
+        default_factory=lambda: os.environ.get("INJECTION_GUARD_MODEL")
+    )
+
 
 settings = Settings()

@@ -7,15 +7,32 @@ schedule or a commitment.
 
 ## Known next work
 
-- **Jailbreak/prompt-injection detection — none exists today.** A 2026-08-08 provider scan
-  (`morph-full-and-provider-landscape-2026-08-08.md`, Cowork project) found this gate has no
-  counterpart in the framework: the governance gate covers leak, tone, and explicit-crisis
-  distress, but nothing screens for prompt injection or jailbreak attempts on the tutor
-  itself. Two open-weight, self-hostable classifier models were identified as the sovereign
-  fix (Meta's Prompt Guard 86M for injection/jailbreak specifically; IBM's Granite Guardian,
-  Apache-2.0, for broader harm/groundedness plus bulk async reclassification of historical
-  traces) — both runnable on Portage's existing sovereign inference tier, no hosted API.
-  Queued: `docs/prompts/CC-B1-local-guardrail-model.md`.
+- **Jailbreak/prompt-injection detection — DONE (CC-B1, Slice Q).** A 2026-08-08 provider
+  scan (`morph-full-and-provider-landscape-2026-08-08.md`, Cowork project) found the
+  governance gate had no counterpart for prompt injection or jailbreak attempts on the
+  tutor itself: it covered leak, tone, and explicit-crisis distress, and a message
+  engineered to re-task the tutor met only a post-hoc gate that judges the *draft*.
+  `agent/injection_guard.py` now screens the learner's **incoming** message before any
+  generation, behind a single off-by-default switch (`INJECTION_GUARD_ENABLED`), failing
+  open with a bounded recorded status when the classifier is unreachable, tracing
+  content-free on both paths (the additive `injection` event when it fires, and
+  `components.injection` on the `turn` event for every other enabled outcome — every
+  stance, control included), and escalating through the existing `flag_escalate` path. It
+  calls its own sovereign client, never the tutoring provider factory, so learner text
+  reaches only the operator-configured classifier endpoint.
+  Source: `backend/app/agent/injection_guard.py`, `backend/app/agent/orchestrator.py`
+  (`_injection_turn`), `backend/tests/test_injection_guard.py`, `VALIDATION.md` Slice Q,
+  `ARCHITECTURE.md` ("Injection and jailbreak screening").
+  Remaining edges, recorded rather than closed: (1) the classifier leg is a **deployment
+  contract**, not a verified launch — Portage's Scale-2 `classifier` alias still carries
+  `license: UNVERIFIED` and `TODO(allocation)`, so which weights it serves is not
+  verifiable from in-tree evidence, and no in-tree test calls a live model (every
+  classifier response in the suite is mocked); (2) what shipped is a **prompted JSON
+  judge** over the sovereign endpoint, not the purpose-built sequence classifier the scan
+  identified (Meta's Prompt Guard 86M), and the broader-harm / bulk-reclassification
+  option (IBM's Granite Guardian, Apache-2.0) is not implemented — a dedicated classifier
+  behind the same client interface is the stronger form, since the platform invariant does
+  not accept a model's self-report as evidence.
 - **Adversarial leak-gate regression benchmark.** The leak gate has no automated adversarial
   test suite today — only the fixed corpus/exercise tests in `tests/test_knowledge.py` and
   the draft gate's own tests. ACL 2026's adversarial-student-agent methodology
