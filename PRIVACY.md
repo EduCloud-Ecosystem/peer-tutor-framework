@@ -29,6 +29,18 @@ Privacy is a structural property, not a policy bolted on afterward.
   non-pseudonymous ids) with a 422 before it reaches the tutor.
   Source: `backend/app/integrations/quad/pii.py` (`pii_reason`, `assert_no_pii`,
   `PIIRejected`), `VALIDATION.md` Quad sidecar section ("PII is rejected at the boundary").
+- **Raw learner text reaches the sovereign classifier only, and only when screening is
+  on.** With the CC-B1 injection/jailbreak layer enabled (`INJECTION_GUARD_ENABLED`), the
+  learner's message is sent to one destination and one only: the operator-configured
+  **sovereign classifier endpoint** (Portage's `classifier` alias on the institutional
+  tier). The guard builds its own client and never touches the tutoring provider factory,
+  so a deployment configured for a hosted provider cannot receive learner text through
+  this path; with the layer off — the shipped default — no learner text leaves the process
+  at all. What is recorded is content-free: a bounded status, score and model, never the
+  message and never an exception string.
+  Source: `backend/app/agent/injection_guard.py`, `backend/app/agent/orchestrator.py`
+  (`_injection_turn`), `ARCHITECTURE.md` ("Injection and jailbreak screening"),
+  `VALIDATION.md` Slice Q.
 - **Content-free trace.** The trace records pseudonymous ids and structured, content-free
   events. Verbatim learner text is not written to the trace, the logs, or any export.
   Source: `CONTRIBUTING.md`, `backend/app/store/models.py` (events table: "append-only
