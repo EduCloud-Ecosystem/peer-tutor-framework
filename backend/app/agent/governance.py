@@ -166,9 +166,26 @@ def safe_rewrite(draft: dict, gov: dict, exercise: dict, pack=None) -> dict:
     The domain-specific redaction comes from the pack (via `LeakEvidence`); the
     peer-voiced redirect and the confidence cap are the core decision. Re-derives
     the evidence from the pack (deterministic; only runs on a block).
+
+    CODE-ONLY STRIPPING IS NOT ENOUGH, and assuming otherwise was a real hole:
+    a draft that discloses the answer in *prose* has no code to remove, so the
+    redaction returned it unchanged and the disclosure was delivered despite the
+    block firing. (Found by the CC-B2 adversarial benchmark's prose-leak case;
+    the earlier fixed-corpus tests only ever blocked drafts whose leak lived in a
+    fenced block, so they could not see it.) So the rewrite re-checks its own
+    output with the same oracle the gate used, and drops the prose entirely —
+    leaving only the redirect — when the prose itself is what disclosed. The
+    redirect is non-disclosing by construction, which is what makes that a fix
+    rather than another round of the same mistake.
     """
     pack = pack or get_active_pack()
-    msg = pack.leak_evidence(draft.get("message", ""), exercise).redacted_message
+    evidence = pack.leak_evidence(draft.get("message", ""), exercise)
+    msg = evidence.redacted_message
+    if (
+        msg and evidence.prose_disclosure
+    ):  # The leak was in the prose, not in stripped code: there is nothing left
+        # worth keeping, because what remains is the disclosure.
+        msg = ""
     redirect = (
         "Actually — I don't want to just paste the whole thing, that's the part "
         "worth working out. What's the *one* operation you think comes next, and why?"
