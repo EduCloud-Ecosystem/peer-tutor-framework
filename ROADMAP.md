@@ -16,11 +16,40 @@ schedule or a commitment.
   Apache-2.0, for broader harm/groundedness plus bulk async reclassification of historical
   traces) — both runnable on Portage's existing sovereign inference tier, no hosted API.
   Queued: `docs/prompts/CC-B1-local-guardrail-model.md`.
-- **Adversarial leak-gate regression benchmark.** The leak gate has no automated adversarial
-  test suite today — only the fixed corpus/exercise tests in `tests/test_knowledge.py` and
-  the draft gate's own tests. ACL 2026's adversarial-student-agent methodology
-  (arXiv 2604.18660) is a reusable reference design for one. Queued:
-  `docs/prompts/CC-B2-adversarial-leak-benchmark.md`.
+- **Adversarial leak-gate regression benchmark — built (CC-B2).** The leak gate now has an
+  automated adversarial suite: `backend/tests/adversarial/` (corpus, runner, compromised-tutor
+  double) plus `backend/tests/test_adversarial_leak.py`, wired into the normal offline suite so
+  it fails CI on any leak. It covers exactly the six techniques of ACL 2026's adversarial-student
+  methodology (arXiv 2604.18660) as scripted turns, against every shipped exercise, keeps benign
+  controls in a separate corpus, and proves its own detection power with a governance-bypass
+  mutation test. A *blocked* attack (the gate rewrote the leak away) counts as success, not as a
+  leak. Building it found and fixed three real gate defects — a prose disclosure delivered after
+  a correctly-firing block, a gate rewrite that its own oracle scored as a leak, and a benchmark
+  whose oracle could never fire. Source: `ARCHITECTURE.md` (governance gate), `VALIDATION.md`
+  "CC-B2 — adversarial leak-gate regression benchmark". **Its two honest limits are queued
+  below**, because the suite does not measure a live model.
+- **Live-model adversarial attacks (the rest of arXiv 2604.18660).** The CC-B2 suite scripts
+  the student turns and the compromised tutor, so it proves the gate holds when a hand-off is
+  happening — it cannot say whether a real aligned model *yields* to each strategy, nor does
+  it search for new strategies the way the paper's fine-tuned adversary does. Closing that
+  needs a live endpoint and an eval-gated (not stub-gated) run.
+  Source: `backend/tests/test_adversarial_leak.py` (the coverage statement in its module
+  docstring), `docs/prompts/CC-B2-adversarial-leak-benchmark.md` §1 (the classes the prompt
+  anticipated as not reproducible without the paper's adversary model), `VALIDATION.md`
+  "CC-B2 — adversarial leak-gate regression benchmark".
+- **Adaptive/self-improving attack corpus.** The corpus is fixed by design (deterministic CI),
+  so it cannot catch a regression that only a *new* attack shape reveals. A generator of
+  attack variants (paraphrasing, obfuscating, splitting extraction across more turns) is the
+  next ratchet. Source: `backend/tests/adversarial/corpus.py` (the fixed-corpus scope note),
+  `docs/prompts/CC-B2-adversarial-leak-benchmark.md` §1 ("an adversarial search over attack
+  strategies" is what did not exist).
+- **Prose detector: uncontracted "here is the solution" (known false negative).** The
+  contraction-only pattern `here'?s the (full )?solution` in `app/packs/datascience/leak.py`
+  does not match "here **is** the full solution", a wording a model may equally favour. Found
+  by CC-B2 and deliberately NOT changed there (the benchmark's double uses the contracted form,
+  so the corpus does not depend on it); widen the pattern and add both forms to the pack's
+  prose cases as its own change. Source: `VALIDATION.md` "CC-B2 — adversarial leak-gate
+  regression benchmark" (known remaining false negative).
 - **Citation-grounded retrieval answers.** The datascience KB (`kb.py`) retrieves passages
   but nothing constrains or attributes the tutor's generated answer back to a specific
   retrieved passage — the "retrieve first, generate second, cite every claim" pattern
