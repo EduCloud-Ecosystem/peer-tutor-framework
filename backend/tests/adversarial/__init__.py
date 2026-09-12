@@ -3,8 +3,15 @@
 Adversarial test utilities for CC-B2.
 """
 
-from .attack import Attack
-from .corpus import build_attack_corpus
+from .attack import Attack, oracle_detects
+from .corpus import PAPER_TECHNIQUES, build_attack_corpus, build_control_corpus
 from .stub_llm import StubLLM
 
-__all__ = ["Attack", "StubLLM", "build_attack_corpus"]
+__all__ = [
+    "PAPER_TECHNIQUES",
+    "Attack",
+    "StubLLM",
+    "build_attack_corpus",
+    "build_control_corpus",
+    "oracle_detects",
+]
