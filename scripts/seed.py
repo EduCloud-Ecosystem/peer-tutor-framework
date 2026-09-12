@@ -5,6 +5,7 @@
 Prints the generated participant id to use in /api/run and /api/sol/turn.
 Requires STORE_BACKEND=sql.
 """
+
 import os
 import sys
 import uuid

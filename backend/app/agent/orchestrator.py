@@ -39,6 +39,7 @@ telemetry the UI can ignore or surface.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from ..config import settings
@@ -51,6 +52,8 @@ from . import telemetry as tel
 from .context import _latest_student_message, build_context
 from .llm import LLMClient
 from .prompts import ABSTAIN_MESSAGE, CONTROL_MESSAGE
+
+logger = logging.getLogger(__name__)
 
 _GOV_PROSE = {
     "none": "—",
